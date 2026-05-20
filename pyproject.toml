@@ -16,6 +16,9 @@ dependencies = [
 [project.scripts]
 air-quality-mcp = "server:main"
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

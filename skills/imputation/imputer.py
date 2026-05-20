@@ -1,13 +1,19 @@
 """
 Imputation skill
 ================
-Handles Excel ingestion, structure validation, and missing-value filling.
+Handles CSV/Excel ingestion, structure validation, and missing-value filling.
+
+Input format (CSV): semicolon-delimited, European decimal (comma), encoding UTF-8 or latin-1.
+Input format (Excel): standard .xlsx / .xls.
+Columns: date, time, station, component_1, ..., component_9
 
 Method selection logic (auto mode)
 ───────────────────────────────────
 < 5%  missing  →  temporal   (time-aware linear interpolation, preserves temporal structure)
 5–30% missing  →  knn        (K-Nearest Neighbours, good for correlated pollutants)
 > 30% missing  →  mice       (Multiple Imputation by Chained Equations, robust for heavy gaps)
+
+All methods operate per station to avoid cross-station data leakage.
 """
 
 import logging
@@ -22,15 +28,17 @@ from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
 
-# These column name fragments are never treated as pollutant values
+# These column name fragments are never treated as sensor values
 NON_SENSOR_PATTERNS = [
     "fecha", "date", "hora", "time", "site", "estacion",
-    "station", "id", "codigo", "code", "nombre", "name",
+    "station", "id", "codigo", "code", "nombre", "name", "sitio",
 ]
 
-# Column groups the skill tries to auto-detect
 COLUMN_ALIASES = {
-    "datetime": ["fecha", "date", "datetime", "timestamp", "fecha_hora"],
+    "date":       ["date", "fecha"],
+    "time":       ["time", "hora"],
+    "station":    ["station", "estacion", "site", "sitio"],
+    "datetime":   ["datetime", "timestamp", "fecha_hora"],
     "wind_speed": ["ws", "wind_speed", "velocidad_viento", "vel_viento", "windspeed"],
     "wind_dir":   ["wd", "wind_dir", "wind_direction", "direccion_viento", "dir_viento"],
 }
@@ -43,35 +51,47 @@ class ImputationSkill:
 
     def ingest(self, file_path: str) -> dict:
         """
-        Load an Excel file, validate its structure, and return a data summary.
+        Load a CSV or Excel file, validate its structure, and return a data summary.
         Does NOT modify the file.
         """
-        path = self._validate_excel_path(file_path)
-        df = self._read_excel(path)
+        path = self._validate_path(file_path)
+        df = self._read_file(path)
 
+        date_col    = self._detect_col(df, COLUMN_ALIASES["date"])
+        time_col    = self._detect_col(df, COLUMN_ALIASES["time"])
+        station_col = self._detect_col(df, COLUMN_ALIASES["station"])
         datetime_col = self._detect_col(df, COLUMN_ALIASES["datetime"])
-        if datetime_col:
-            df[datetime_col] = pd.to_datetime(df[datetime_col], errors="coerce")
 
-        sensor_cols = self._sensor_columns(df)
+        effective_datetime_col = self._build_datetime(df, date_col, time_col, datetime_col)
+
+        sensor_cols  = self._sensor_columns(df)
         missing_stats = self._missing_stats(df, sensor_cols)
-        overall_pct = self._overall_missing_pct(df, sensor_cols)
+        overall_pct  = self._overall_missing_pct(df, sensor_cols)
+        warnings     = self._structure_warnings(df)
 
-        warnings = self._structure_warnings(df)
-
-        return {
+        result = {
             "status": "ok",
             "file": str(path.resolve()),
             "rows": len(df),
             "columns": list(df.columns),
             "sensor_columns": sensor_cols,
-            "datetime_column": datetime_col,
-            "date_range": self._date_range(df, datetime_col),
+            "date_column": date_col,
+            "time_column": time_col,
+            "station_column": station_col,
+            "date_range": self._date_range(df, effective_datetime_col),
             "missing_by_column": missing_stats,
             "overall_missing_pct": overall_pct,
             "recommended_method": self._select_method(overall_pct),
             "warnings": warnings,
         }
+
+        if station_col:
+            result["stations"] = sorted(df[station_col].dropna().unique().tolist())
+            result["missing_by_station"] = self._missing_stats_by_station(
+                df, sensor_cols, station_col
+            )
+
+        return result
 
     def impute(
         self,
@@ -81,22 +101,23 @@ class ImputationSkill:
     ) -> dict:
         """
         Fill missing values and save the result as a parquet file.
-        Returns imputation metadata and the output path.
+        Imputation is applied per station when a station column is detected.
         """
         path = Path(file_path)
         df = self._read_file(path)
 
+        station_col = self._detect_col(df, COLUMN_ALIASES["station"])
         sensor_cols = target_columns or self._sensor_columns(df)
         self._validate_columns_exist(df, sensor_cols)
 
         missing_before = self._missing_stats(df, sensor_cols)
-        overall_pct = self._overall_missing_pct(df, sensor_cols)
+        overall_pct    = self._overall_missing_pct(df, sensor_cols)
 
         if method == "auto":
             method = self._select_method(overall_pct)
             logger.info(f"Auto-selected method: '{method}' ({overall_pct:.1f}% missing)")
 
-        df_imputed = self._apply_method(df.copy(), sensor_cols, method)
+        df_imputed = self._apply_method(df.copy(), sensor_cols, method, station_col)
 
         missing_after = self._missing_stats(df_imputed, sensor_cols)
         cells_filled = (
@@ -111,6 +132,7 @@ class ImputationSkill:
         return {
             "status": "ok",
             "method_used": method,
+            "station_column": station_col,
             "output_path": str(output_path),
             "rows": len(df_imputed),
             "columns_imputed": sensor_cols,
@@ -159,13 +181,19 @@ class ImputationSkill:
     # Imputation methods
     # ─────────────────────────────────────────
 
-    def _apply_method(self, df: pd.DataFrame, cols: list[str], method: str) -> pd.DataFrame:
+    def _apply_method(
+        self,
+        df: pd.DataFrame,
+        cols: list[str],
+        method: str,
+        station_col: Optional[str] = None,
+    ) -> pd.DataFrame:
         if method in ("temporal", "linear"):
-            return self._temporal_impute(df, cols)
+            return self._temporal_impute(df, cols, station_col)
         elif method == "knn":
-            return self._knn_impute(df, cols)
+            return self._knn_impute(df, cols, station_col)
         elif method == "mice":
-            return self._mice_impute(df, cols)
+            return self._mice_impute(df, cols, station_col)
         else:
             raise ValueError(
                 f"Unknown method '{method}'. "
@@ -173,32 +201,60 @@ class ImputationSkill:
             )
 
     @staticmethod
-    def _temporal_impute(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-        """Time-aware linear interpolation. Best for small gaps in time series."""
-        df[cols] = df[cols].interpolate(method="linear", limit_direction="both")
+    def _temporal_impute(
+        df: pd.DataFrame, cols: list[str], station_col: Optional[str] = None
+    ) -> pd.DataFrame:
+        """Time-aware linear interpolation per station. Best for small gaps."""
+        if station_col and station_col in df.columns:
+            df[cols] = df.groupby(station_col, group_keys=False)[cols].apply(
+                lambda g: g.interpolate(method="linear", limit_direction="both")
+            )
+        else:
+            df[cols] = df[cols].interpolate(method="linear", limit_direction="both")
         return df
 
     @staticmethod
-    def _knn_impute(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-        """K-Nearest Neighbours. Good for spatially/cross-correlated pollutants."""
-        scaler = StandardScaler()
-        scaled = scaler.fit_transform(df[cols].values)
-        filled = KNNImputer(n_neighbors=5, weights="distance").fit_transform(scaled)
-        df[cols] = scaler.inverse_transform(filled)
+    def _knn_impute(
+        df: pd.DataFrame, cols: list[str], station_col: Optional[str] = None
+    ) -> pd.DataFrame:
+        """K-Nearest Neighbours per station. Uses cross-component correlation."""
+        if station_col and station_col in df.columns:
+            for grp_idx in df.groupby(station_col).groups.values():
+                data = df.loc[grp_idx, cols].values
+                scaler = StandardScaler()
+                scaled = scaler.fit_transform(data)
+                filled = KNNImputer(n_neighbors=5, weights="distance").fit_transform(scaled)
+                df.loc[grp_idx, cols] = scaler.inverse_transform(filled)
+        else:
+            scaler = StandardScaler()
+            scaled = scaler.fit_transform(df[cols].values)
+            filled = KNNImputer(n_neighbors=5, weights="distance").fit_transform(scaled)
+            df[cols] = scaler.inverse_transform(filled)
         return df
 
     @staticmethod
-    def _mice_impute(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-        """Multiple Imputation by Chained Equations. Robust for heavy missingness."""
-        scaler = StandardScaler()
-        scaled = scaler.fit_transform(df[cols].values)
-        filled = IterativeImputer(
+    def _mice_impute(
+        df: pd.DataFrame, cols: list[str], station_col: Optional[str] = None
+    ) -> pd.DataFrame:
+        """Multiple Imputation by Chained Equations per station. Robust for heavy gaps."""
+        imputer = IterativeImputer(
             max_iter=10,
             random_state=42,
             initial_strategy="median",
             imputation_order="roman",
-        ).fit_transform(scaled)
-        df[cols] = scaler.inverse_transform(filled)
+        )
+        if station_col and station_col in df.columns:
+            for grp_idx in df.groupby(station_col).groups.values():
+                data = df.loc[grp_idx, cols].values
+                scaler = StandardScaler()
+                scaled = scaler.fit_transform(data)
+                filled = imputer.fit_transform(scaled)
+                df.loc[grp_idx, cols] = scaler.inverse_transform(filled)
+        else:
+            scaler = StandardScaler()
+            scaled = scaler.fit_transform(df[cols].values)
+            filled = imputer.fit_transform(scaled)
+            df[cols] = scaler.inverse_transform(filled)
         return df
 
     # ─────────────────────────────────────────
@@ -206,24 +262,25 @@ class ImputationSkill:
     # ─────────────────────────────────────────
 
     @staticmethod
-    def _validate_excel_path(file_path: str) -> Path:
+    def _validate_path(file_path: str) -> Path:
         path = Path(file_path)
+        if path.suffix.lower() not in (".xlsx", ".xls", ".csv"):
+            raise ValueError(f"Expected .xlsx, .xls, or .csv, got '{path.suffix}'")
         if not path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
-        if path.suffix.lower() not in (".xlsx", ".xls"):
-            raise ValueError(f"Expected .xlsx or .xls, got '{path.suffix}'")
         return path
-
-    @staticmethod
-    def _read_excel(path: Path) -> pd.DataFrame:
-        df = pd.read_excel(path)
-        df.columns = [str(c).strip().lower() for c in df.columns]
-        return df
 
     @staticmethod
     def _read_file(path: Path) -> pd.DataFrame:
         if path.suffix == ".parquet":
             return pd.read_parquet(path)
+        if path.suffix.lower() == ".csv":
+            try:
+                df = pd.read_csv(path, sep=";", decimal=",", encoding="utf-8")
+            except UnicodeDecodeError:
+                df = pd.read_csv(path, sep=";", decimal=",", encoding="latin-1")
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            return df
         df = pd.read_excel(path)
         df.columns = [str(c).strip().lower() for c in df.columns]
         return df
@@ -233,6 +290,25 @@ class ImputationSkill:
         for c in candidates:
             if c in df.columns:
                 return c
+        return None
+
+    @staticmethod
+    def _build_datetime(
+        df: pd.DataFrame,
+        date_col: Optional[str],
+        time_col: Optional[str],
+        datetime_col: Optional[str],
+    ) -> Optional[str]:
+        """Combine separate date+time columns into a single datetime column in-place."""
+        if date_col and time_col:
+            df["_datetime"] = pd.to_datetime(
+                df[date_col].astype(str) + " " + df[time_col].astype(str),
+                errors="coerce",
+            )
+            return "_datetime"
+        if datetime_col:
+            df[datetime_col] = pd.to_datetime(df[datetime_col], errors="coerce")
+            return datetime_col
         return None
 
     @staticmethod
@@ -260,6 +336,21 @@ class ImputationSkill:
         }
 
     @staticmethod
+    def _missing_stats_by_station(
+        df: pd.DataFrame, cols: list[str], station_col: str
+    ) -> dict:
+        result = {}
+        for station, grp in df.groupby(station_col):
+            result[str(station)] = {
+                col: {
+                    "missing": int(grp[col].isnull().sum()),
+                    "pct": round(grp[col].isnull().sum() / max(len(grp), 1) * 100, 2),
+                }
+                for col in cols
+            }
+        return result
+
+    @staticmethod
     def _overall_missing_pct(df: pd.DataFrame, cols: list[str]) -> float:
         if not cols:
             return 0.0
@@ -269,15 +360,15 @@ class ImputationSkill:
 
     @staticmethod
     def _date_range(df: pd.DataFrame, datetime_col: Optional[str]) -> Optional[dict]:
-        if not datetime_col:
+        if not datetime_col or datetime_col not in df.columns:
             return None
         col = pd.to_datetime(df[datetime_col], errors="coerce")
         if col.isnull().all():
             return None
         delta = col.max() - col.min()
         return {
-            "start": str(col.min()),
-            "end":   str(col.max()),
+            "start":   str(col.min()),
+            "end":     str(col.max()),
             "n_hours": int(delta.total_seconds() / 3600),
         }
 
@@ -291,10 +382,28 @@ class ImputationSkill:
 
     def _structure_warnings(self, df: pd.DataFrame) -> list[str]:
         warnings = []
-        for group, candidates in COLUMN_ALIASES.items():
-            if not self._detect_col(df, candidates):
+
+        has_datetime = bool(self._detect_col(df, COLUMN_ALIASES["datetime"]))
+        has_date     = bool(self._detect_col(df, COLUMN_ALIASES["date"]))
+        has_time     = bool(self._detect_col(df, COLUMN_ALIASES["time"]))
+
+        if not has_datetime and not (has_date and has_time):
+            warnings.append(
+                "No datetime column detected. Expected a combined datetime column "
+                f"({COLUMN_ALIASES['datetime']}) or separate date+time columns "
+                f"({COLUMN_ALIASES['date']} + {COLUMN_ALIASES['time']})."
+            )
+
+        if not self._detect_col(df, COLUMN_ALIASES["station"]):
+            warnings.append(
+                f"Station column not detected. Expected one of: {COLUMN_ALIASES['station']}"
+            )
+
+        for group in ("wind_speed", "wind_dir"):
+            if not self._detect_col(df, COLUMN_ALIASES[group]):
                 warnings.append(
                     f"Column group '{group}' not detected. "
-                    f"Expected one of: {candidates}"
+                    f"Expected one of: {COLUMN_ALIASES[group]}"
                 )
+
         return warnings
