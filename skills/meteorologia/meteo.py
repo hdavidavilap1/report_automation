@@ -34,14 +34,18 @@ _COMPASS = [
 # ---------------------------------------------------------------------------
 
 def load_meteo(file_path: str) -> pd.DataFrame:
-    """Parse the meteo CSV into an indexed DataFrame.
+    """Parse the meteo CSV or imputed parquet into an indexed DataFrame.
 
-    Expected columns (semicolon-delimited):
+    Expected columns (semicolon-delimited or parquet):
     date;time;Temp Out - Ind;Hum Out - Ind;Wind Speed - Ind;Wind Dir;Press - Ind;Rain - mm;Radiacion Solar
+    Column names are matched case-insensitively so imputed parquet files work too.
     """
-    df = pd.read_csv(file_path, sep=";")
-    df["datetime"] = pd.to_datetime(df["date"] + " " + df["time"], dayfirst=False)
-    df = df.set_index("datetime").drop(columns=["date", "time"])
+    p = Path(file_path)
+    df = pd.read_parquet(p) if p.suffix == ".parquet" else pd.read_csv(p, sep=";")
+    date_col = next((c for c in df.columns if c.lower() == "date"), "date")
+    time_col = next((c for c in df.columns if c.lower() == "time"), "time")
+    df["datetime"] = pd.to_datetime(df[date_col] + " " + df[time_col], dayfirst=False)
+    df = df.set_index("datetime").drop(columns=[date_col, time_col])
     df.columns = ["temp", "hum", "ws", "wd", "press", "rain", "rad"]
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")

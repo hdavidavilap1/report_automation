@@ -128,14 +128,35 @@ _DEFINITIONS = {
 # Data loading
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _read_tabular(file_path: str) -> pd.DataFrame:
+    """Read a CSV or parquet file into a DataFrame."""
+    p = Path(file_path)
+    if p.suffix == ".parquet":
+        return pd.read_parquet(p)
+    return pd.read_csv(p, sep=";")
+
+
+def _find_col(df: pd.DataFrame, name: str) -> str | None:
+    """Return the column whose name matches `name` (case-insensitive), or None."""
+    if name in df.columns:
+        return name
+    low = name.lower()
+    for c in df.columns:
+        if c.lower() == low:
+            return c
+    return None
+
+
 def load_pollutants(file_path: str) -> pd.DataFrame:
-    """Load pollutants CSV and convert all values to µg/m³."""
-    df = pd.read_csv(file_path, sep=";")
-    df["datetime"] = pd.to_datetime(df["date"] + " " + df["time"], dayfirst=False)
-    df = df.drop(columns=["date", "time"]).set_index("datetime")
+    """Load pollutants CSV or imputed parquet and convert all values to µg/m³."""
+    df = _read_tabular(file_path)
+    date_col = _find_col(df, "date") or "date"
+    time_col = _find_col(df, "time") or "time"
+    df["datetime"] = pd.to_datetime(df[date_col] + " " + df[time_col], dayfirst=False)
+    df = df.drop(columns=[date_col, time_col]).set_index("datetime")
     for key, meta in POLLUTANT_META.items():
-        col = meta["col"]
-        if col in df.columns:
+        col = _find_col(df, meta["col"])
+        if col is not None:
             df[key] = pd.to_numeric(df[col], errors="coerce") * meta["conv"]
     keep = ["station"] + [k for k in POLLUTANT_META if k in df.columns]
     return df[keep]
@@ -907,6 +928,85 @@ Las casillas con (-) representan datos no válidos.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Pollutant statistics for Section 8 conclusiones
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_pollutant_stats(df: pd.DataFrame) -> dict:
+    """Return max concentrations, dates and exceedance counts per pollutant."""
+    import math as _math
+    stations = sorted(df["station"].unique())
+    stats = {}
+    for pollutant in POLLUTANT_ORDER:
+        if pollutant not in df.columns:
+            continue
+        pst: dict = {}
+
+        if "24h" in NORMS[pollutant]:
+            norm_val = NORMS[pollutant]["24h"][0]
+            best = None
+            exceed_by_sta: dict = {}
+            for sta in stations:
+                sdf = df[df["station"] == sta]
+                daily = _daily_avg(sdf, pollutant).dropna()
+                if daily.empty:
+                    continue
+                idx = daily.idxmax()
+                val = float(daily[idx])
+                if not _math.isnan(val) and (best is None or val > best["value"]):
+                    best = {"value": round(val, 2), "station": sta, "date": str(idx)}
+                exceed_by_sta[sta] = int((daily > norm_val).sum())
+            if best:
+                pst["max_24h"] = best
+                pst["exceeds_24h"] = best["value"] > norm_val
+                pst["exceedances_24h_by_station"] = exceed_by_sta
+
+        if "1h" in NORMS[pollutant]:
+            norm_val = NORMS[pollutant]["1h"][0]
+            best = None
+            for sta in stations:
+                sdf = df[df["station"] == sta]
+                s = sdf[pollutant].dropna()
+                if s.empty:
+                    continue
+                idx = s.idxmax()
+                val = float(s[idx])
+                if not _math.isnan(val) and (best is None or val > best["value"]):
+                    best = {
+                        "value": round(val, 2),
+                        "station": sta,
+                        "date": str(idx.date()),
+                        "hour": idx.strftime("%H:%M"),
+                    }
+            if best:
+                pst["max_1h"] = best
+                pst["exceeds_1h"] = best["value"] > norm_val
+
+        if "8h" in NORMS[pollutant]:
+            norm_val = NORMS[pollutant]["8h"][0]
+            best = None
+            for sta in stations:
+                sdf = df[df["station"] == sta]
+                roll = _rolling_8h(sdf[pollutant]).dropna()
+                if roll.empty:
+                    continue
+                idx = roll.idxmax()
+                val = float(roll[idx])
+                if not _math.isnan(val) and (best is None or val > best["value"]):
+                    best = {
+                        "value": round(val, 2),
+                        "station": sta,
+                        "date": str(idx.date()),
+                        "hour": idx.strftime("%H:%M"),
+                    }
+            if best:
+                pst["max_8h"] = best
+                pst["exceeds_8h"] = best["value"] > norm_val
+
+        stats[pollutant] = pst
+    return stats
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1033,7 +1133,12 @@ def generate_report(file_path: str, output_dir: str) -> dict:
     report_path = out / "seccion6_resultados.html"
     report_path.write_text(report_html, encoding="utf-8")
 
+    pollutant_stats = _compute_pollutant_stats(df)
     return {
         "report_path": str(report_path),
         "pollutants": all_figures,
+        "pollutant_stats": pollutant_stats,
+        "period_start": str(df.index[0].date()),
+        "period_end": str(df.index[-1].date()),
+        "stations": sorted(df["station"].unique().tolist()),
     }
