@@ -10,8 +10,8 @@ formal PDF report.
 ## Current status
 
 **Phase 1 complete:** MCP server + imputation skill.
-**Phase 2 in progress:** Report generation skills — `meteorologia`, `resultados_analisis`, and `ica` done; `conclusiones` pending.
-**Phase 3 pending:** PDF assembler skill (WeasyPrint).
+**Phase 2 complete:** Report generation skills — `meteorologia`, `resultados_analisis`, `ica`, and `conclusiones` all done.
+**Phase 3 complete:** PDF assembler skill — Chrome headless renderer (WeasyPrint fallback).
 **Phase 4 pending:** R/OpenAir microservice (Docker + Plumber) for OpenAir-native figures.
 
 ## Report section skills (Phase 2)
@@ -23,7 +23,7 @@ The report is organised in four sections, each with its own skill:
 | 5. Meteorología | `skills/meteorologia/` | **Done** | `generate_meteorologia` |
 | 6. Resultados del análisis | `skills/resultados_analisis/` | **Done** | `generate_resultados` |
 | 7. ICA (Índice de Calidad del Aire) | `skills/ica/` | **Done** | `generate_ica` |
-| 8. Conclusiones y recomendaciones | `skills/conclusiones/` | Pending | `generate_conclusiones` |
+| 8. Conclusiones y recomendaciones | `skills/conclusiones/` | **Done** | `generate_conclusiones` |
 
 ### meteorologia skill outputs
 `generate_report(file_path, output_dir)` returns a dict with:
@@ -126,6 +126,8 @@ The ingestion step normalises all sheets into a single long-format DataFrame:
 | `generate_meteorologia` | `file_path`, `output_dir` | self-contained HTML report + 3 PNG figure paths + table HTML + 4 narrative texts |
 | `generate_resultados` | `file_path`, `output_dir` | self-contained HTML report with 6 pollutant sections × (table + 3 figures + text) |
 | `generate_ica` | `file_path`, `output_dir` | self-contained HTML report with sections 7.1–7.6 (per-pollutant ICA tables + calendar heatmaps) + composite timeseries |
+| `generate_conclusiones` | `resultados_result`, `ica_result`, `meteo_result`, `output_dir`, `location?` | self-contained HTML report with per-pollutant compliance bullets + ICA narrative |
+| `assemble_pdf` | `output_dir`, `meteo_html?`, `resultados_html?`, `ica_html?`, `conclusiones_html?`, cover metadata | merged HTML + PDF via Chrome headless (WeasyPrint fallback) |
 
 ## Development setup
 
@@ -179,13 +181,6 @@ Semicolon-delimited, one row per hour per station (EST-01, EST-02, EST-03):
 
 ## Next steps
 
-1. Implement `resultados_analisis` skill:
-   - Per-pollutant 24 h / 1 h daily tables vs. Res. 2254/2017 limits
-   - Bar charts (observed vs. norm) and box plots per station
-   - timeVariation (Python-native matplotlib; R/OpenAir Phase 4 upgrade)
-2. Implement `ica` skill:
-   - ICA calculation using EPA breakpoint interpolation (Res. 2254/2017 breakpoints)
-   - Calendar heatmaps per station and pollutant
-3. Implement `conclusiones` skill (compliance narrative, recommendations)
-4. Build R/OpenAir microservice (Dockerfile + Plumber endpoints) — Phase 4
-5. Implement `pdf_assembler` skill with WeasyPrint — Phase 3
+1. Build R/OpenAir microservice (Dockerfile + Plumber endpoints) — Phase 4
+   - timeVariation, polarPlot, polarAnnulus figures
+   - Activated via `USE_R_OPENAIR=true`

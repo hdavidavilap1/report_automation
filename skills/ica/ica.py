@@ -834,19 +834,29 @@ def generate_report(file_path: str, output_dir: str) -> dict:
 <h1>7. Índice de Calidad del Aire (ICA)</h1>
 
 <p>
-El Índice de Calidad del Aire (ICA) es un indicador adimensional que permite comunicar de
-forma sencilla el estado de la calidad del aire y los posibles efectos sobre la salud de la
-población. Es calculado de acuerdo con la metodología establecida por la EPA (Environmental
-Protection Agency) de los Estados Unidos, adaptada a los niveles máximos permisibles
-definidos en la Resolución 2254 de 2017 del Ministerio de Ambiente y Desarrollo Sostenible
-(MADS). La fórmula de interpolación lineal aplicada es:
+Teniendo en cuenta las Resolución 2254 de 2017 del MAVDT, los índices de calidad de aire se contemplan como una
+herramienta de evaluación ambiental que permite tener una correlación de las concentraciones de algunos
+contaminantes atmosféricos con los efectos en la salud.
+Por ello la importancia de contemplarlos en el presente documento y categorizarlos a partir de la calificación
+cuantitativa y cualitativa que se puede ver en la Figura 6.
 </p>
 <p style="text-align:center;font-style:italic;">
 IP = ((I<sub>alto</sub> − I<sub>bajo</sub>) / (PC<sub>alto</sub> − PC<sub>bajo</sub>)) × (Cp − PC<sub>bajo</sub>) + I<sub>bajo</sub>
 </p>
+<p>Dónde:</p>
+<ul style="margin:0.3em 0 0.8em 1.8em;line-height:1.7">
+  <li><strong>IP</strong> = Índice para el contaminante p</li>
+  <li><strong>CP</strong> = Concentración medida para el contaminante p</li>
+  <li><strong>PC<sub>alto</sub></strong> = Punto de corte mayor o igual a CP</li>
+  <li><strong>PC<sub>bajo</sub></strong> = Punto de corte menor o igual a CP</li>
+  <li><strong>I<sub>alto</sub></strong> = Valor del Índice de Calidad del Aire correspondiente al BP<sub>Hi</sub></li>
+  <li><strong>I<sub>bajo</sub></strong> = Valor del Índice de Calidad del Aire correspondiente al BP<sub>Lo</sub></li>
+</ul>
 <p>
-El ICA compuesto por estación y día corresponde al valor máximo registrado entre todos los
-contaminantes criterio evaluados. El período de evaluación comprende del {period}.
+El ICA será calculado a partir de la anterior ecuación, que corresponde a la metodología utilizada por la EPA para el
+cálculo del AQI y será reportado el mayor valor que se obtenga del cálculo de cada uno de los contaminantes medidos.
+</p>
+<p>
 {" ".join(narrative_parts)}
 </p>
 
@@ -869,6 +879,25 @@ contaminantes criterio evaluados. El período de evaluación comprende del {peri
     report_path = out / "seccion7_ica.html"
     report_path.write_text(report_html, encoding="utf-8")
 
+    ica_categories: dict = {}
+    for sta in stations:
+        sta_df = ica_df.xs(sta, level="station")
+        ica_categories[sta] = {}
+        for p in ICA_BREAKPOINTS:
+            col = f"ica_{p}"
+            if col not in sta_df.columns:
+                continue
+            counts: dict = {}
+            for v in sta_df[col].dropna():
+                cat = _ica_category(v)
+                counts[cat] = counts.get(cat, 0) + 1
+            ica_categories[sta][p] = counts
+        comp_counts: dict = {}
+        for v in sta_df["ica_composite"].dropna():
+            cat = _ica_category(v)
+            comp_counts[cat] = comp_counts.get(cat, 0) + 1
+        ica_categories[sta]["composite"] = comp_counts
+
     return {
         "report_path": str(report_path),
         "stations": all_figures,
@@ -883,4 +912,5 @@ contaminantes criterio evaluados. El período de evaluación comprende del {peri
             }
             for sta in stations
         },
+        "ica_categories": ica_categories,
     }

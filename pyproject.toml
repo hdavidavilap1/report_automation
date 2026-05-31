@@ -20,6 +20,7 @@ air-quality-mcp = "server:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+pdf = ["weasyprint>=60.0"]
 
 [build-system]
 requires = ["hatchling"]

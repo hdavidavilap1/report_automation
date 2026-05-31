@@ -14,6 +14,8 @@ from mcp.server import Server
 from skills.imputation.imputer import ImputationSkill
 from skills.ica.ica import generate_report as ica_generate_report
 from skills.meteorologia.meteo import generate_report as meteo_generate_report
+from skills.conclusiones.conclusiones import generate_report as conclusiones_generate_report
+from skills.pdf_assembler.assembler import generate_report as pdf_generate_report
 from skills.resultados_analisis.resultados import generate_report as resultados_generate_report
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -168,6 +170,109 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="generate_conclusiones",
+            description=(
+                "Generates Section 8 — Conclusiones y Recomendaciones of the air quality report. "
+                "Consumes the output dicts of generate_resultados, generate_ica, and "
+                "generate_meteorologia to auto-produce a Spanish compliance narrative for each "
+                "pollutant (PM10, PM2.5, SO2, NO2, CO, O3) and a summary ICA bullet. "
+                "Outputs a single self-contained HTML file."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "resultados_result": {
+                        "type": "object",
+                        "description": "Return dict from generate_resultados.",
+                    },
+                    "ica_result": {
+                        "type": "object",
+                        "description": "Return dict from generate_ica.",
+                    },
+                    "meteo_result": {
+                        "type": "object",
+                        "description": "Return dict from generate_meteorologia.",
+                    },
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Directory where the HTML report will be saved.",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": (
+                            "Human-readable name of the monitoring campaign location, "
+                            "e.g. 'la Planta de Beneficio Minero El Diamante'. "
+                            "Defaults to 'la zona de estudio' if omitted."
+                        ),
+                    },
+                },
+                "required": ["resultados_result", "ica_result", "meteo_result", "output_dir"],
+            },
+        ),
+        types.Tool(
+            name="assemble_pdf",
+            description=(
+                "Assembles the four section HTML reports into a single paginated PDF. "
+                "Accepts the report_path from each section's generate_* tool output. "
+                "Uses Chrome headless for rendering (full CSS + base64 images). "
+                "Falls back to WeasyPrint or saves merged HTML if Chrome is unavailable."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Directory where the PDF and merged HTML will be saved.",
+                    },
+                    "meteo_html": {
+                        "type": "string",
+                        "description": "Path to seccion5_meteorologia.html (report_path from generate_meteorologia).",
+                    },
+                    "resultados_html": {
+                        "type": "string",
+                        "description": "Path to seccion6_resultados.html (report_path from generate_resultados).",
+                    },
+                    "ica_html": {
+                        "type": "string",
+                        "description": "Path to seccion7_ica.html (report_path from generate_ica).",
+                    },
+                    "conclusiones_html": {
+                        "type": "string",
+                        "description": "Path to seccion8_conclusiones.html (report_path from generate_conclusiones).",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Main title on the cover page. Defaults to 'INFORME DE CALIDAD DEL AIRE'.",
+                    },
+                    "subtitle": {
+                        "type": "string",
+                        "description": "Subtitle on the cover page.",
+                    },
+                    "company_name": {
+                        "type": "string",
+                        "description": "Company / contractor name shown on the cover page.",
+                    },
+                    "report_number": {
+                        "type": "string",
+                        "description": "Report reference number, e.g. 'CA.25420.I1'.",
+                    },
+                    "period_start": {
+                        "type": "string",
+                        "description": "ISO date string for the start of the monitoring period.",
+                    },
+                    "period_end": {
+                        "type": "string",
+                        "description": "ISO date string for the end of the monitoring period.",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "Monitoring campaign location shown on the cover page.",
+                    },
+                },
+                "required": ["output_dir"],
+            },
+        ),
+        types.Tool(
             name="generate_meteorologia",
             description=(
                 "Generates the Meteorología section of the air quality report. "
@@ -235,6 +340,31 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = resultados_generate_report(
                 file_path=arguments["file_path"],
                 output_dir=arguments["output_dir"],
+            )
+
+        elif name == "assemble_pdf":
+            result = pdf_generate_report(
+                output_dir=arguments["output_dir"],
+                meteo_html=arguments.get("meteo_html"),
+                resultados_html=arguments.get("resultados_html"),
+                ica_html=arguments.get("ica_html"),
+                conclusiones_html=arguments.get("conclusiones_html"),
+                title=arguments.get("title", "INFORME DE CALIDAD DEL AIRE"),
+                subtitle=arguments.get("subtitle", "Campaña de Monitoreo de Calidad del Aire"),
+                company_name=arguments.get("company_name", ""),
+                report_number=arguments.get("report_number", ""),
+                period_start=arguments.get("period_start", ""),
+                period_end=arguments.get("period_end", ""),
+                location=arguments.get("location", ""),
+            )
+
+        elif name == "generate_conclusiones":
+            result = conclusiones_generate_report(
+                resultados_result=arguments["resultados_result"],
+                ica_result=arguments["ica_result"],
+                meteo_result=arguments["meteo_result"],
+                output_dir=arguments["output_dir"],
+                location=arguments.get("location", "la zona de estudio"),
             )
 
         elif name == "generate_meteorologia":
