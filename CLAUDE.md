@@ -10,41 +10,88 @@ formal PDF report.
 ## Current status
 
 **Phase 1 complete:** MCP server + imputation skill.
-**Phase 2 pending:** Report generation skills (windrose, polar plot, timevariation, calendarplot, dispersion map).
-**Phase 3 pending:** PDF assembler skill.
+**Phase 2 in progress:** Report generation skills — `meteorologia`, `resultados_analisis`, and `ica` done; `conclusiones` pending.
+**Phase 3 pending:** PDF assembler skill (WeasyPrint).
 **Phase 4 pending:** R/OpenAir microservice (Docker + Plumber) for OpenAir-native figures.
+
+## Report section skills (Phase 2)
+
+The report is organised in four sections, each with its own skill:
+
+| Section | Skill | Status | MCP tool |
+|---|---|---|---|
+| 5. Meteorología | `skills/meteorologia/` | **Done** | `generate_meteorologia` |
+| 6. Resultados del análisis | `skills/resultados_analisis/` | **Done** | `generate_resultados` |
+| 7. ICA (Índice de Calidad del Aire) | `skills/ica/` | **Done** | `generate_ica` |
+| 8. Conclusiones y recomendaciones | `skills/conclusiones/` | Pending | `generate_conclusiones` |
+
+### meteorologia skill outputs
+`generate_report(file_path, output_dir)` returns a dict with:
+- **`report_path`:** Single self-contained HTML file (`seccion5_meteorologia.html`) with all content embedded (images as base64)
+- **`table_html`:** Raw HTML string for the color-coded daily summary table
+- **`figure_timeseries`:** Path to 6-panel time-series PNG (Gráfica 1)
+- **`figure_windrose_aggregate`:** Path to aggregate windrose PNG (Gráfica 2)
+- **`figure_windrose_daily`:** Path to daily windrose grid PNG (Gráfica 3)
+- **`texts`:** Dict with keys `temperatura`, `precipitacion`, `humedad_relativa`, `viento`
+
+#### HTML report structure (`seccion5_meteorologia.html`)
+The assembled report follows the company's standard format exactly:
+- Section intro: institutional boilerplate explaining meteorological parameters and the color scale
+- **Tabla 16** — color-coded daily summary (green→yellow→red per column, normalized to dataset range): T_max, T_min, T_prom, HR_max/min/prom, Prec total, WS_max/prom, Dir. Predominante (16-point Spanish compass)
+- **Gráfica 1** — 6-panel time-series: temp (line), humidity (line), precipitation (bars), wind speed (line), wind direction (scatter, avoids 0/360 jump artifacts), solar radiation (line)
+- **5.1 Temperatura** — institutional definition paragraph + auto-generated data summary
+- **5.2 Precipitación** — institutional definition paragraph + auto-generated data summary
+- **5.3 Humedad Relativa** — institutional definition paragraph + auto-generated data summary
+- **5.4 Viento** — institutional paragraph on Colombian wind patterns + auto-generated data summary
+- **Gráfica 2** — aggregate windrose (16 sectors, normed frequency, full period)
+- **Gráfica 3** — daily windrose grid (4-column layout, one panel per day)
 
 ## Architecture
 
 ```
-Excel input
+CSV/Excel input
     │
     ▼
-MCP server (server.py)          ← orchestrates the full pipeline
+MCP server (server.py)             ← orchestrates the full pipeline
     │
-    ├── skill: imputation        ← fills missing sensor values (sklearn)
+    ├── skill: imputation           ← fills missing sensor values (sklearn)
+    ├── skill: extrapolation        ← extends time series beyond available data
     │
-    ├── skill: windrose          ← Python windrose lib / R OpenAir fallback
-    ├── skill: polar_plot        ← matplotlib / R OpenAir fallback
-    ├── skill: timevariation     ← matplotlib / R OpenAir fallback
-    ├── skill: calendarplot      ← matplotlib / R OpenAir fallback
-    ├── skill: dispersion_map    ← matplotlib / R OpenAir fallback
+    ├── skill: meteorologia         ← Table 16 + Gráficas 1-3 + narrative text
+    ├── skill: resultados_analisis  ← per-pollutant tables + bar charts + box plots + timeVariation
+    ├── skill: ica                  ← ICA calculation (Res. 2254/2017) + calendar heatmaps
+    ├── skill: conclusiones         ← compliance narrative + recommendations
     │
-    └── skill: pdf_assembler     ← WeasyPrint, formal layout
+    └── skill: pdf_assembler        ← WeasyPrint, formal layout
 ```
 
 ## Project structure
 
 ```
 air-quality-mcp/
-├── server.py                        # MCP server, tool definitions and handlers
-├── pyproject.toml                   # dependencies
-├── CLAUDE.md                        # this file
+├── server.py                           # MCP server, tool definitions and handlers
+├── pyproject.toml                      # dependencies
+├── CLAUDE.md                           # this file
+├── data/
+│   ├── sample_meteo.csv                # semicolon-delimited; date;time + 7 meteo vars
+│   └── sample_pollutants.csv           # semicolon-delimited; date;time;station + 6 pollutants
 └── skills/
     ├── __init__.py
-    └── imputation/
+    ├── imputation/
+    │   ├── __init__.py
+    │   └── imputer.py                  # ingest, impute, comparison_report
+    ├── extrapolation/
+    │   ├── __init__.py
+    │   └── extrapolator.py
+    ├── meteorologia/
+    │   ├── __init__.py
+    │   └── meteo.py                    # load_meteo, daily_summary_table, figure_*, generate_text, generate_report
+    ├── resultados_analisis/
+    │   ├── __init__.py
+    │   └── resultados.py               # load_pollutants, _rolling_8h, per-pollutant tables + figures, generate_report
+    └── ica/
         ├── __init__.py
-        └── imputer.py               # ingest, impute, comparison_report
+        └── ica.py                      # compute_ica, per-pollutant ICA tables, calendar heatmaps, generate_report
 ```
 
 ## Key technical decisions
@@ -69,13 +116,16 @@ Input Excel files follow this structure (to be confirmed with client):
 The ingestion step normalises all sheets into a single long-format DataFrame:
 `fecha | estacion | pm25 | no2 | o3 | co | so2 | nox | ws | wd`
 
-## MCP tools (Phase 1)
+## MCP tools
 
 | Tool | Input | Output |
 |---|---|---|
 | `ingest_excel` | `file_path` | summary: columns, date range, missing % per column, recommended imputation method |
 | `impute_data` | `file_path`, `method`, `target_columns` | imputed parquet path, cells filled, before/after stats |
 | `imputation_report` | `original_path`, `imputed_path` | side-by-side missing data comparison |
+| `generate_meteorologia` | `file_path`, `output_dir` | self-contained HTML report + 3 PNG figure paths + table HTML + 4 narrative texts |
+| `generate_resultados` | `file_path`, `output_dir` | self-contained HTML report with 6 pollutant sections × (table + 3 figures + text) |
+| `generate_ica` | `file_path`, `output_dir` | self-contained HTML report with sections 7.1–7.6 (per-pollutant ICA tables + calendar heatmaps) + composite timeseries |
 
 ## Development setup
 
@@ -115,10 +165,27 @@ Restart Claude Desktop after saving.
 | `USE_R_OPENAIR` | `false` | Set to `true` to route figure generation through the R/OpenAir microservice |
 | `OPENAIR_SERVICE_URL` | `http://localhost:8765` | Base URL of the R/Plumber microservice |
 
+## Data format
+
+### Meteorological CSV (sample_meteo.csv)
+Semicolon-delimited, one row per hour, single station:
+`date;time;Temp Out - Ind;Hum Out - Ind;Wind Speed - Ind;Wind Dir;Press - Ind;Rain - mm;Radiacion Solar`
+
+Loaded as columns: `temp | hum | ws | wd | press | rain | rad`
+
+### Pollutants CSV (sample_pollutants.csv)
+Semicolon-delimited, one row per hour per station (EST-01, EST-02, EST-03):
+`date;time;station;SO2 ppb;PM10 µg/m3 std;PM2.5 µg/m3 std;NO2 ppb;CO ppm;O3 ppb`
+
 ## Next steps
 
-1. Receive sample Excel from client → confirm sheet/column structure
-2. Adjust `imputer.ingest()` to handle multi-sheet format (one sheet per pollutant)
-3. Implement report skills one by one, starting with `windrose`
-4. Build R/OpenAir microservice (Dockerfile + Plumber endpoints)
-5. Implement `pdf_assembler` skill with WeasyPrint
+1. Implement `resultados_analisis` skill:
+   - Per-pollutant 24 h / 1 h daily tables vs. Res. 2254/2017 limits
+   - Bar charts (observed vs. norm) and box plots per station
+   - timeVariation (Python-native matplotlib; R/OpenAir Phase 4 upgrade)
+2. Implement `ica` skill:
+   - ICA calculation using EPA breakpoint interpolation (Res. 2254/2017 breakpoints)
+   - Calendar heatmaps per station and pollutant
+3. Implement `conclusiones` skill (compliance narrative, recommendations)
+4. Build R/OpenAir microservice (Dockerfile + Plumber endpoints) — Phase 4
+5. Implement `pdf_assembler` skill with WeasyPrint — Phase 3
