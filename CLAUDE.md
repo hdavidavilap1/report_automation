@@ -10,20 +10,27 @@ formal PDF report.
 ## Current status
 
 **Phase 1 complete:** MCP server + imputation skill.
-**Phase 2 complete:** Report generation skills — `meteorologia`, `resultados_analisis`, `ica`, and `conclusiones` all done.
-**Phase 3 complete:** PDF assembler skill — Chrome headless renderer (WeasyPrint fallback).
+**Phase 2 complete:** Report generation skills — `portada_generalidades`, `meteorologia`, `resultados_analisis`, `ica`, and `conclusiones` all done.
+**Phase 3 complete:** PDF assembler skill — Chrome headless renderer (WeasyPrint fallback), now also merges the `portada_generalidades` section.
 **Phase 4 pending:** R/OpenAir microservice (Docker + Plumber) for OpenAir-native figures.
 
 ## Report section skills (Phase 2)
 
-The report is organised in four sections, each with its own skill:
+The report is organised in five sections, each with its own skill:
 
 | Section | Skill | Status | MCP tool |
 |---|---|---|---|
+| Portada + 1–4 (Datos Básicos, Introducción, Objetivos, Generalidades) | `skills/portada_generalidades/` | **Done** | `generate_portada` |
 | 5. Meteorología | `skills/meteorologia/` | **Done** | `generate_meteorologia` |
 | 6. Resultados del análisis | `skills/resultados_analisis/` | **Done** | `generate_resultados` |
 | 7. ICA (Índice de Calidad del Aire) | `skills/ica/` | **Done** | `generate_ica` |
 | 8. Conclusiones y recomendaciones | `skills/conclusiones/` | **Done** | `generate_conclusiones` |
+
+### portada_generalidades skill outputs
+`generate_report(config, output_dir)` returns a dict with:
+- **`report_path`:** Single self-contained HTML file (`seccion1_4_portada_generalidades.html`) with cover page, control page (signatures/revisions), table of contents, lists of annexes/figures/tables/graphs, glossary, abbreviations, and Sections 1–4 (Datos Básicos, Introducción, Objetivos, Generalidades §4.1–§4.13), all embedded (images as base64)
+
+The `config` dict carries all report metadata (client/final-client info, monitoring stations, emission sources, personnel, revision history, compliance/uncertainty/environmental-conditions tables, figure paths, etc.) — see `data/sample_portada_config.json` for the full structure.
 
 ### meteorologia skill outputs
 `generate_report(file_path, output_dir)` returns a dict with:
@@ -57,6 +64,7 @@ MCP server (server.py)             ← orchestrates the full pipeline
     ├── skill: imputation           ← fills missing sensor values (sklearn)
     ├── skill: extrapolation        ← extends time series beyond available data
     │
+    ├── skill: portada_generalidades ← cover/control/TOC/glossary + Secciones 1-4
     ├── skill: meteorologia         ← Table 16 + Gráficas 1-3 + narrative text
     ├── skill: resultados_analisis  ← per-pollutant tables + bar charts + box plots + timeVariation
     ├── skill: ica                  ← ICA calculation (Res. 2254/2017) + calendar heatmaps
@@ -74,7 +82,8 @@ air-quality-mcp/
 ├── CLAUDE.md                           # this file
 ├── data/
 │   ├── sample_meteo.csv                # semicolon-delimited; date;time + 7 meteo vars
-│   └── sample_pollutants.csv           # semicolon-delimited; date;time;station + 6 pollutants
+│   ├── sample_pollutants.csv           # semicolon-delimited; date;time;station + 6 pollutants
+│   └── sample_portada_config.json      # sample config dict for generate_portada (client, stations, sources, compliance, etc.)
 └── skills/
     ├── __init__.py
     ├── imputation/
@@ -83,15 +92,21 @@ air-quality-mcp/
     ├── extrapolation/
     │   ├── __init__.py
     │   └── extrapolator.py
+    ├── portada_generalidades/
+    │   ├── __init__.py
+    │   └── portada_generalidades.py     # cover/control/TOC/lists/glossary + Secciones 1-4, generate_report
     ├── meteorologia/
     │   ├── __init__.py
     │   └── meteo.py                    # load_meteo, daily_summary_table, figure_*, generate_text, generate_report
     ├── resultados_analisis/
     │   ├── __init__.py
     │   └── resultados.py               # load_pollutants, _rolling_8h, per-pollutant tables + figures, generate_report
-    └── ica/
+    ├── ica/
+    │   ├── __init__.py
+    │   └── ica.py                      # compute_ica, per-pollutant ICA tables, calendar heatmaps, generate_report
+    └── pdf_assembler/
         ├── __init__.py
-        └── ica.py                      # compute_ica, per-pollutant ICA tables, calendar heatmaps, generate_report
+        └── assembler.py                # merges section HTMLs (portada + 5-8) into one paginated PDF
 ```
 
 ## Key technical decisions
@@ -123,11 +138,12 @@ The ingestion step normalises all sheets into a single long-format DataFrame:
 | `ingest_excel` | `file_path` | summary: columns, date range, missing % per column, recommended imputation method |
 | `impute_data` | `file_path`, `method`, `target_columns` | imputed parquet path, cells filled, before/after stats |
 | `imputation_report` | `original_path`, `imputed_path` | side-by-side missing data comparison |
+| `generate_portada` | `config`, `output_dir` | self-contained HTML report with cover, control page, TOC, lists, glossary, abbreviations and Sections 1–4 |
 | `generate_meteorologia` | `file_path`, `output_dir` | self-contained HTML report + 3 PNG figure paths + table HTML + 4 narrative texts |
 | `generate_resultados` | `file_path`, `output_dir` | self-contained HTML report with 6 pollutant sections × (table + 3 figures + text) |
 | `generate_ica` | `file_path`, `output_dir` | self-contained HTML report with sections 7.1–7.6 (per-pollutant ICA tables + calendar heatmaps) + composite timeseries |
 | `generate_conclusiones` | `resultados_result`, `ica_result`, `meteo_result`, `output_dir`, `location?` | self-contained HTML report with per-pollutant compliance bullets + ICA narrative |
-| `assemble_pdf` | `output_dir`, `meteo_html?`, `resultados_html?`, `ica_html?`, `conclusiones_html?`, cover metadata | merged HTML + PDF via Chrome headless (WeasyPrint fallback) |
+| `assemble_pdf` | `output_dir`, `portada_html?`, `meteo_html?`, `resultados_html?`, `ica_html?`, `conclusiones_html?`, cover metadata | merged HTML + PDF via Chrome headless (WeasyPrint fallback); `portada_html` replaces the auto-generated cover with its own cover/control/TOC/glossary pages |
 
 ## Development setup
 

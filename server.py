@@ -16,6 +16,7 @@ from skills.ica.ica import generate_report as ica_generate_report
 from skills.meteorologia.meteo import generate_report as meteo_generate_report
 from skills.conclusiones.conclusiones import generate_report as conclusiones_generate_report
 from skills.pdf_assembler.assembler import generate_report as pdf_generate_report
+from skills.portada_generalidades.portada_generalidades import generate_report as portada_generate_report
 from skills.resultados_analisis.resultados import generate_report as resultados_generate_report
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -210,10 +211,41 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="generate_portada",
+            description=(
+                "Generates the cover page, control page, table of contents, lists of "
+                "annexes/figures/tables/graphs, glossary, abbreviations, and Sections "
+                "1–4 (Datos Básicos, Introducción, Objetivos, Generalidades) of the air "
+                "quality report. Produces a single self-contained HTML report."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "config": {
+                        "type": "object",
+                        "description": (
+                            "Full report configuration dict — report code/type, period, "
+                            "client and final-client info, monitoring stations, emission "
+                            "sources, personnel, revision history, compliance tables, "
+                            "uncertainty and environmental-conditions tables, figure paths, "
+                            "etc. See data/sample_portada_config.json for the full structure."
+                        ),
+                    },
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Directory where the HTML report will be saved.",
+                    },
+                },
+                "required": ["config", "output_dir"],
+            },
+        ),
+        types.Tool(
             name="assemble_pdf",
             description=(
-                "Assembles the four section HTML reports into a single paginated PDF. "
+                "Assembles the section HTML reports into a single paginated PDF. "
                 "Accepts the report_path from each section's generate_* tool output. "
+                "When portada_html is supplied, its own cover/control/TOC/glossary "
+                "pages replace the auto-generated cover page. "
                 "Uses Chrome headless for rendering (full CSS + base64 images). "
                 "Falls back to WeasyPrint or saves merged HTML if Chrome is unavailable."
             ),
@@ -223,6 +255,15 @@ async def list_tools() -> list[types.Tool]:
                     "output_dir": {
                         "type": "string",
                         "description": "Directory where the PDF and merged HTML will be saved.",
+                    },
+                    "portada_html": {
+                        "type": "string",
+                        "description": (
+                            "Path to seccion1_4_portada_generalidades.html "
+                            "(report_path from generate_portada). When provided, replaces "
+                            "the auto-generated cover page with its own cover, control "
+                            "page, TOC, lists, glossary and Sections 1–4."
+                        ),
                     },
                     "meteo_html": {
                         "type": "string",
@@ -342,9 +383,16 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 output_dir=arguments["output_dir"],
             )
 
+        elif name == "generate_portada":
+            result = portada_generate_report(
+                config=arguments["config"],
+                output_dir=arguments["output_dir"],
+            )
+
         elif name == "assemble_pdf":
             result = pdf_generate_report(
                 output_dir=arguments["output_dir"],
+                portada_html=arguments.get("portada_html"),
                 meteo_html=arguments.get("meteo_html"),
                 resultados_html=arguments.get("resultados_html"),
                 ica_html=arguments.get("ica_html"),

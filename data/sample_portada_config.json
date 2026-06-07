@@ -1,0 +1,326 @@
+{
+  "_comment": "Config de ejemplo basado en el informe CA.25420.I1 (Cenit – Estación Chimita)",
+
+  "report_code": "CA.25420.I1",
+  "report_type": "CA",
+  "title": "MONITOREO CALIDAD DEL AIRE INDUSTRIAL",
+
+  "corola_logo_path": "assets/corola_logo.png",
+  "client_logo_path": "assets/cenit_logo.png",
+  "cover_photo_path": "assets/cover_photo.jpg",
+
+  "period": {
+    "start_date": "2025-12-17",
+    "end_date": "2026-01-03",
+    "duration_days": 18,
+    "season": "seca",
+    "period_label": "DICIEMBRE 2025 – ENERO 2026"
+  },
+
+  "location": {
+    "municipality": "Girón",
+    "department": "Santander"
+  },
+
+  "client": {
+    "name": "Chemilab S.A.S",
+    "NIT": "900329160",
+    "contact": "Diego Garzón",
+    "address": "Cra 21 No. 195 - 50 BG 3 a 7",
+    "phone": "3175023669",
+    "municipality_dept": "Bogotá D.C",
+    "email": "direccionoperaciones@chemilab.com.co",
+    "activity": "Transporte de Hidrocarburos"
+  },
+
+  "final_client": {
+    "name": "CENIT TRANSPORTE Y LOGISTICA DE HIDROCARBUROS S.A.S",
+    "station_name": "Estación Chimita",
+    "description": "CENIT S.A., filial del Grupo Ecopetrol, es la empresa líder en transporte y logística de hidrocarburos en Colombia. Administra una extensa red de oleoductos y poliductos, junto con puertos y estaciones estratégicas, garantizando el movimiento seguro y eficiente de crudo y derivados. Su enfoque está en ofrecer soluciones integrales de transporte con altos estándares de sostenibilidad y confiabilidad."
+  },
+
+  "lab_partner": {
+    "name": "Chemilab S.A.S",
+    "logo_path": "assets/chemilab_logo.png"
+  },
+
+  "monitoring_plan_code": "PM.420-25",
+  "analyzers_text": "GRIMM EDM 180-C, HORIBA APSA – 370, HORIBA APNA – 370, HORIBA APMA – 370, HORIBA APOA – 370 y Davis Vantage Pro II",
+  "ideam_acreditacion": "Resolución N°0920 de 2024 (Vigencia hasta septiembre 2028)",
+
+  "personnel": {
+    "realizo": {
+      "name": "Mario Avila",
+      "title": "Ingeniero Ambiental\nCorola Ambiental S.A.S"
+    },
+    "reviso": {
+      "name": "Luis Ferney Olaya Santamaría",
+      "title": "Responsable Técnico\nCorola Ambiental S.A.S"
+    },
+    "aprobo": {
+      "name": "Luis Ferney Olaya Santamaría",
+      "title": "Responsable Técnico\nCorola Ambiental S.A.S"
+    }
+  },
+
+  "revision": {
+    "number": 1,
+    "date": "2026-02-14",
+    "comments": "Ninguno",
+    "author": "Mario Avila"
+  },
+
+  "stations": [
+    {
+      "id": "Est 1",
+      "code": "CA-1",
+      "objective": "Determinar las concentraciones de contaminantes criterio en área de influencia de la estación CENIT Chimita",
+      "type": "Indicativa-Rural-Industrial-Punto Crítico",
+      "description": "Estación ubicada a 120 metros aproximadamente del Tanque de relevo de la estación, en dirección Oeste, en su área se encuentra el descargadero de combustible. La estación tiene como objetivo la medición de contaminantes criterio presente en el área circundante a la estación.",
+      "latitude": "07°06'00,25\"",
+      "longitude": "73°09'58.41\"",
+      "norte": "2342549,857",
+      "este": "4981651,648",
+      "altitude_msnm": 678,
+      "presion_barometrica": "≈ 708 mmHg",
+      "ancho_via": "15 metros",
+      "dir_viento_predominante": "Hacia el Suroeste",
+      "tiempo": "Seco",
+      "tipo_conexion": "Conexión directa",
+      "fecha_inicio": "2025-12-17",
+      "fecha_finalizacion": "2026-01-03",
+      "num_muestras": "432 en 18 días",
+      "equipos": [
+        {"equipo": "GRIMM – EDM180C",           "parametro": "PM10 / PM2.5", "codigo_interno": "38", "sn": "18A20022"},
+        {"equipo": "HORIBA – APSA370",           "parametro": "SO2",          "codigo_interno": "44", "sn": "UNAUF1NV"},
+        {"equipo": "HORIBA – APNA370",           "parametro": "NO2",          "codigo_interno": "59", "sn": "PCTWMMJF"},
+        {"equipo": "HORIBA – APMA370",           "parametro": "CO",           "codigo_interno": "22", "sn": "PDYFHJ23"},
+        {"equipo": "HORIBA – APOA370",           "parametro": "O3",           "codigo_interno": "07", "sn": "WKKT596N"},
+        {"equipo": "GAS PATRON SO2",             "parametro": "SO2",          "codigo_interno": "-",  "sn": "EI0096333"},
+        {"equipo": "GAS PATRON NO2",             "parametro": "NO2",          "codigo_interno": "-",  "sn": "EA0030400"},
+        {"equipo": "GAS PATRON CO",              "parametro": "CO",           "codigo_interno": "-",  "sn": "EI0085573"},
+        {"equipo": "CALIBRADOR MULTIGAS DILUTOR","parametro": "Gas Cero",     "codigo_interno": "-",  "sn": "10881"},
+        {"equipo": "GENERADOR AIRE CERO",        "parametro": "-",            "codigo_interno": "-",  "sn": "7000"}
+      ],
+      "photo_aerial_path": "assets/ca1_aerial.jpg",
+      "photos_field": [
+        "assets/ca1_field1.jpg",
+        "assets/ca1_field2.jpg",
+        "assets/ca1_field3.jpg"
+      ]
+    },
+    {
+      "id": "Est 2",
+      "code": "CA-2",
+      "objective": "Determinar las concentraciones de contaminantes criterio en área de influencia de la estación CENIT Chimita",
+      "type": "Indicativa-Rural-Industrial-Punto Crítico",
+      "description": "Estación instalada a 150 metros aproximadamente en dirección Norte de los tanques de relevo de la estación, en su área circundante se encuentran los tanques de almacenamiento de combustible, como objetivo principal tiene la medición de contaminantes criterio.",
+      "latitude": "07°05'54.90\"",
+      "longitude": "73°10'05.07\"",
+      "norte": "2342385,738",
+      "este": "4981447,403",
+      "altitude_msnm": 677,
+      "presion_barometrica": "≈ 708 mmHg",
+      "ancho_via": "15 metros",
+      "dir_viento_predominante": "Hacia el Suroeste",
+      "tiempo": "Seco",
+      "tipo_conexion": "Conexión directa",
+      "fecha_inicio": "2025-12-17",
+      "fecha_finalizacion": "2026-01-03",
+      "num_muestras": "432 en 18 días",
+      "equipos": [
+        {"equipo": "GRIMM – EDM180C",           "parametro": "PM10 / PM2.5", "codigo_interno": "28", "sn": "18A03016"},
+        {"equipo": "HORIBA – APSA370",           "parametro": "SO2",          "codigo_interno": "45", "sn": "YSRDCW3M"},
+        {"equipo": "HORIBA – APNA370",           "parametro": "NO2",          "codigo_interno": "50", "sn": "9156R938"},
+        {"equipo": "HORIBA – APMA370",           "parametro": "CO",           "codigo_interno": "49", "sn": "WFW81XS2"},
+        {"equipo": "HORIBA – APOA370",           "parametro": "O3",           "codigo_interno": "32", "sn": "G22KUL6S"},
+        {"equipo": "GAS PATRON SO2",             "parametro": "SO2",          "codigo_interno": "-",  "sn": "EI0096333"},
+        {"equipo": "GAS PATRON NO2",             "parametro": "NO2",          "codigo_interno": "-",  "sn": "EA0030400"},
+        {"equipo": "GAS PATRON CO",              "parametro": "CO",           "codigo_interno": "-",  "sn": "EI0085573"},
+        {"equipo": "CALIBRADOR MULTIGAS DILUTOR","parametro": "Gas Cero",     "codigo_interno": "-",  "sn": "10881"},
+        {"equipo": "GENERADOR AIRE CERO",        "parametro": "-",            "codigo_interno": "-",  "sn": "7000"}
+      ],
+      "photo_aerial_path": "assets/ca2_aerial.jpg",
+      "photos_field": [
+        "assets/ca2_field1.jpg",
+        "assets/ca2_field2.jpg",
+        "assets/ca2_field3.jpg"
+      ]
+    },
+    {
+      "id": "Est 3",
+      "code": "CA-3",
+      "objective": "Determinar las concentraciones de contaminantes criterio en área de influencia de la estación CENIT Chimita",
+      "type": "Indicativa-Rural-Industrial-Punto Crítico",
+      "description": "Estación instalada a 80 metros en dirección Este de la trampa de raspadores, en su área circundante se encuentran dos plantas de gas natural, como objetivo principal tiene la medición de contaminantes criterio.",
+      "latitude": "07°05'59.78\"N",
+      "longitude": "73°10'10.26\"O",
+      "norte": "2342535,797",
+      "este": "4981288,308",
+      "altitude_msnm": 671,
+      "presion_barometrica": "≈ 708 mmHg",
+      "ancho_via": "15 metros",
+      "dir_viento_predominante": "Hacia el Suroeste",
+      "tiempo": "Seco",
+      "tipo_conexion": "Conexión directa",
+      "fecha_inicio": "2025-12-17",
+      "fecha_finalizacion": "2026-01-03",
+      "num_muestras": "432 en 18 días",
+      "equipos": [
+        {"equipo": "GRIMM – EDM180C",           "parametro": "PM10 / PM2.5", "codigo_interno": "39", "sn": "18A20038"},
+        {"equipo": "HORIBA – APSA370",           "parametro": "SO2",          "codigo_interno": "57", "sn": "VYUEC80N"},
+        {"equipo": "HORIBA – APNA370",           "parametro": "NO2",          "codigo_interno": "27", "sn": "PK4S6MRC"},
+        {"equipo": "HORIBA – APMA370",           "parametro": "CO",           "codigo_interno": "60", "sn": "BFUG26UX"},
+        {"equipo": "HORIBA – APOA370",           "parametro": "O3",           "codigo_interno": "48", "sn": "1T71YRV7"},
+        {"equipo": "GAS PATRON SO2",             "parametro": "SO2",          "codigo_interno": "-",  "sn": "EI0096333"},
+        {"equipo": "GAS PATRON NO2",             "parametro": "NO2",          "codigo_interno": "-",  "sn": "EA0030400"},
+        {"equipo": "GAS PATRON CO",              "parametro": "CO",           "codigo_interno": "-",  "sn": "EI0085573"},
+        {"equipo": "CALIBRADOR MULTIGAS DILUTOR","parametro": "Gas Cero",     "codigo_interno": "-",  "sn": "10881"},
+        {"equipo": "GENERADOR AIRE CERO",        "parametro": "-",            "codigo_interno": "-",  "sn": "7000"}
+      ],
+      "photo_aerial_path": "assets/ca3_aerial.jpg",
+      "photos_field": [
+        "assets/ca3_field1.jpg",
+        "assets/ca3_field2.jpg",
+        "assets/ca3_field3.jpg"
+      ]
+    }
+  ],
+
+  "emission_sources": [
+    {
+      "id": 1,
+      "name": "Tanque de Relevo",
+      "description": "Almacenamiento intermedio y regulador en estaciones de bombeo, con tiempos de retención más cortos.",
+      "photo_path": "assets/fuente1.jpg"
+    },
+    {
+      "id": 2,
+      "name": "Generador Eléctrico",
+      "description": "Un generador eléctrico es una máquina que convierte energía mecánica en energía eléctrica mediante el principio de inducción electromagnética. Generalmente está compuesto por un motor de combustión interna, que utiliza combustibles como diésel, gas o gasolina, y un alternador que transforma el movimiento en corriente eléctrica.",
+      "photo_path": "assets/fuente2.jpg"
+    },
+    {
+      "id": 3,
+      "name": "Tramo vial Estación Chimita",
+      "description": "Tramo de infraestructura de transporte que conecta la estación Chimita, con sus diferentes áreas productivas.",
+      "photo_path": "assets/fuente3.jpg"
+    },
+    {
+      "id": 4,
+      "name": "Descargadero Combustible",
+      "description": "En un descargadero de combustible, como el que se observa en la foto, la infraestructura está diseñada para recibir hidrocarburos transportados en carrotanques y transferirlos de manera segura hacia tanques de almacenamiento o sistemas de distribución.",
+      "photo_path": "assets/fuente4.jpg"
+    },
+    {
+      "id": 5,
+      "name": "Trampa de Raspadores",
+      "description": "Una trampa de raspadores es una instalación especializada dentro de un sistema de transporte por tuberías (oleoductos, poliductos o gasoductos) que permite la entrada y salida controlada de dispositivos de limpieza e inspección interna, conocidos como pigs o raspadores.",
+      "photo_path": "assets/fuente5.jpg"
+    },
+    {
+      "id": 6,
+      "name": "Planta de Gas Natural",
+      "description": "Una planta de gas natural es una instalación industrial destinada al procesamiento, almacenamiento y distribución de gas natural, con el objetivo de hacerlo apto para su transporte y consumo.",
+      "photo_path": "assets/fuente6.jpg"
+    },
+    {
+      "id": 7,
+      "name": "Tanque de Almacenamiento de Combustible",
+      "description": "Un tanque de almacenamiento de combustible es una estructura industrial diseñada para recibir, guardar y conservar hidrocarburos líquidos como diésel, gasolina o fuel oil, asegurando su disponibilidad para procesos de consumo o distribución.",
+      "photo_path": "assets/fuente7.jpg"
+    },
+    {
+      "id": 8,
+      "name": "Zona de Acopio de Residuos Industriales",
+      "description": "Una zona de acopio de residuos industriales es un espacio destinado al almacenamiento temporal y controlado de desechos generados por procesos productivos, antes de su tratamiento, disposición final o aprovechamiento.",
+      "photo_path": "assets/fuente8.jpg"
+    }
+  ],
+
+  "figure_paths": {
+    "fig1_pm":        "assets/fig1_pm_world.png",
+    "fig2_so2":       "assets/fig2_so2_world.png",
+    "fig3_no2":       "assets/fig3_no2_world.png",
+    "fig4_fuentes":   "assets/fig4_mapa_fuentes.png",
+    "fig5_estaciones":"assets/fig5_mapa_estaciones.png"
+  },
+
+  "geo_map_fuentes_path":   "assets/fig4_mapa_fuentes.png",
+  "geo_map_stations_path":  "assets/fig5_mapa_estaciones.png",
+  "met_station_photo_path": "assets/met_station.jpg",
+
+  "cronograma": [
+    {"fecha": "2025-12-16", "actividad": "Calibración Analizadores"},
+    {"fecha": "2025-12-17", "actividad": "Inicio de campaña de monitoreo"},
+    {"fecha": "2026-01-03", "actividad": "Finalización de campaña de monitoreo"},
+    {"fecha": "2026-01-04", "actividad": "Verificación Cero & Span Analizadores"}
+  ],
+
+  "condiciones_ambientales": [
+    {"id": "Est 1", "code": "CA-1", "temp_min": "24,3 °C", "temp_max": "27,2 °C"},
+    {"id": "Est 2", "code": "CA-2", "temp_min": "23,8 °C", "temp_max": "25,1 °C"},
+    {"id": "Est 3", "code": "CA-3", "temp_min": "25,2 °C", "temp_max": "27,8 °C"}
+  ],
+
+  "incertidumbre": [
+    {"id": "Est 1", "code": "CA-1", "PM10": "1,9 %", "PM25": "1,9 %", "SO2": "2,9 %", "NO2": "2,8 %", "CO": "2,5 %", "O3": "2,6 %"},
+    {"id": "Est 2", "code": "CA-2", "PM10": "1,9 %", "PM25": "1,9 %", "SO2": "3,0 %", "NO2": "2,4 %", "CO": "2,4 %", "O3": "2,5 %"},
+    {"id": "Est 3", "code": "CA-3", "PM10": "1,9 %", "PM25": "1,9 %", "SO2": "2,4 %", "NO2": "2,6 %", "CO": "2,9 %", "O3": "3,0 %"}
+  ],
+
+  "compliance": {
+    "_comment": "Datos precalculados de cumplimiento normativo. Alternativamente Claude Code puede calcularlos del parquet imputado.",
+    "grupos_horario": ["Dióxido de Azufre - SO₂", "Dióxido de Nitrógeno - NO₂", "Monóxido de Carbono - CO"],
+    "grupos_8h":      ["Monóxido de Carbono - CO", "Ozono – O₃"],
+    "grupos_24h":     ["Material Particulado - PM₁₀", "Material Particulado - PM₂,₅", "Dióxido de Azufre - SO₂"],
+    "horario": [
+      {"id": "Est 1", "code": "CA-1", "pollutants": {
+        "Dióxido de Azufre - SO₂":      {"validas": "427/432", "excedencias": 0},
+        "Dióxido de Nitrógeno - NO₂":   {"validas": "427/432", "excedencias": 0},
+        "Monóxido de Carbono - CO":      {"validas": "427/432", "excedencias": 0}
+      }},
+      {"id": "Est 2", "code": "CA-2", "pollutants": {
+        "Dióxido de Azufre - SO₂":      {"validas": "427/432", "excedencias": 0},
+        "Dióxido de Nitrógeno - NO₂":   {"validas": "427/432", "excedencias": 0},
+        "Monóxido de Carbono - CO":      {"validas": "427/432", "excedencias": 0}
+      }},
+      {"id": "Est 3", "code": "CA-3", "pollutants": {
+        "Dióxido de Azufre - SO₂":      {"validas": "426/432", "excedencias": 0},
+        "Dióxido de Nitrógeno - NO₂":   {"validas": "426/432", "excedencias": 0},
+        "Monóxido de Carbono - CO":      {"validas": "426/432", "excedencias": 0}
+      }}
+    ],
+    "octohorario": [
+      {"id": "Est 1", "code": "CA-1", "pollutants": {
+        "Monóxido de Carbono - CO": {"validas": "425/425", "excedencias": 0},
+        "Ozono – O₃":               {"validas": "425/425", "excedencias": 0}
+      }},
+      {"id": "Est 2", "code": "CA-2", "pollutants": {
+        "Monóxido de Carbono - CO": {"validas": "425/425", "excedencias": 0},
+        "Ozono – O₃":               {"validas": "425/425", "excedencias": 0}
+      }},
+      {"id": "Est 3", "code": "CA-3", "pollutants": {
+        "Monóxido de Carbono - CO": {"validas": "425/425", "excedencias": 0},
+        "Ozono – O₃":               {"validas": "425/425", "excedencias": 0}
+      }}
+    ],
+    "diario": [
+      {"id": "Est 1", "code": "CA-1", "pollutants": {
+        "Material Particulado - PM₁₀":  {"validas": "18/18", "excedencias": 0},
+        "Material Particulado - PM₂,₅": {"validas": "18/18", "excedencias": 0},
+        "Dióxido de Azufre - SO₂":      {"validas": "18/18", "excedencias": 0}
+      }},
+      {"id": "Est 2", "code": "CA-2", "pollutants": {
+        "Material Particulado - PM₁₀":  {"validas": "18/18", "excedencias": 0},
+        "Material Particulado - PM₂,₅": {"validas": "18/18", "excedencias": 0},
+        "Dióxido de Azufre - SO₂":      {"validas": "18/18", "excedencias": 0}
+      }},
+      {"id": "Est 3", "code": "CA-3", "pollutants": {
+        "Material Particulado - PM₁₀":  {"validas": "18/18", "excedencias": 0},
+        "Material Particulado - PM₂,₅": {"validas": "18/18", "excedencias": 0},
+        "Dióxido de Azufre - SO₂":      {"validas": "18/18", "excedencias": 0}
+      }}
+    ]
+  }
+}
