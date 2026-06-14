@@ -12,7 +12,7 @@ formal PDF report.
 **Phase 1 complete:** MCP server + imputation skill.
 **Phase 2 complete:** Report generation skills — `portada_generalidades`, `meteorologia`, `resultados_analisis`, `ica`, and `conclusiones` all done.
 **Phase 3 complete:** PDF assembler skill — Chrome headless renderer (WeasyPrint fallback), now also merges the `portada_generalidades` section.
-**Phase 4 pending:** R/OpenAir microservice (Docker + Plumber) for OpenAir-native figures.
+**Phase 4 discarded:** R/OpenAir microservice (Docker + Plumber) is not needed — the Python-native figures (windrose, timevariation) already cover the report's requirements.
 
 ## Report section skills (Phase 2)
 
@@ -61,8 +61,9 @@ CSV/Excel input
     ▼
 MCP server (server.py)             ← orchestrates the full pipeline
     │
+    ├── skill: extrapolation        ← extends time series beyond available data (retropolation + forecast, runs first)
     ├── skill: imputation           ← fills missing sensor values (sklearn)
-    ├── skill: extrapolation        ← extends time series beyond available data
+    ├── skill: memoria_raw          ← reconstructs a lost raw-instrument memory dump (optional, data recovery only)
     │
     ├── skill: portada_generalidades ← cover/control/TOC/glossary + Secciones 1-4
     ├── skill: meteorologia         ← Table 16 + Gráficas 1-3 + narrative text
@@ -91,7 +92,10 @@ air-quality-mcp/
     │   └── imputer.py                  # ingest, impute, comparison_report
     ├── extrapolation/
     │   ├── __init__.py
-    │   └── extrapolator.py
+    │   └── extrapolator.py             # retropolation + forecast via hot-deck, extrapolate()
+    ├── memoria_raw/
+    │   ├── __init__.py
+    │   └── memoria_raw.py              # reconstructs a lost APNA-370 _HA.csv memory dump, reconstruct()
     ├── portada_generalidades/
     │   ├── __init__.py
     │   └── portada_generalidades.py     # cover/control/TOC/lists/glossary + Secciones 1-4, generate_report
@@ -117,7 +121,7 @@ air-quality-mcp/
   - < 5% missing → `temporal` (time-aware linear interpolation)
   - 5–30% missing → `knn` (K-Nearest Neighbours, sklearn)
   - > 30% missing → `mice` (Iterative Imputer, sklearn)
-- **OpenAir figures:** Python-native by default; R/OpenAir microservice activated via `USE_R_OPENAIR=true`
+- **OpenAir figures:** Python-native (windrose, timevariation via matplotlib) — the R/OpenAir microservice was evaluated and discarded as unnecessary
 - **PDF assembly:** WeasyPrint (HTML → PDF, reliable pagination and layout)
 
 ## Data format
@@ -136,8 +140,10 @@ The ingestion step normalises all sheets into a single long-format DataFrame:
 | Tool | Input | Output |
 |---|---|---|
 | `ingest_excel` | `file_path` | summary: columns, date range, missing % per column, recommended imputation method |
+| `extrapolate_data` | `file_path`, `n_hours?`, `wind_dir_columns?` | extended parquet path (retropolation + forecast via hot-deck); run before `impute_data` |
 | `impute_data` | `file_path`, `method`, `target_columns` | imputed parquet path, cells filled, before/after stats |
 | `imputation_report` | `original_path`, `imputed_path` | side-by-side missing data comparison |
+| `reconstruct_memoria` | `original_path`, `processed_path`, `component_columns`, `output_path`, station/calibration/save_datetime options | reconstructed APNA-370 `_HA.csv` raw memory dump, with Alarm bit 6 ("V") flagging hot-deck-filled hours and Caution bit 32 ("DR") flagging the reconstructed calibration row; **data-recovery only** — for memory files that genuinely existed but were lost |
 | `generate_portada` | `config`, `output_dir` | self-contained HTML report with cover, control page, TOC, lists, glossary, abbreviations and Sections 1–4 |
 | `generate_meteorologia` | `file_path`, `output_dir` | self-contained HTML report + 3 PNG figure paths + table HTML + 4 narrative texts |
 | `generate_resultados` | `file_path`, `output_dir` | self-contained HTML report with 6 pollutant sections × (table + 3 figures + text) |
@@ -176,13 +182,6 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
 
 Restart Claude Desktop after saving.
 
-## Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `USE_R_OPENAIR` | `false` | Set to `true` to route figure generation through the R/OpenAir microservice |
-| `OPENAIR_SERVICE_URL` | `http://localhost:8765` | Base URL of the R/Plumber microservice |
-
 ## Data format
 
 ### Meteorological CSV (sample_meteo.csv)
@@ -197,6 +196,9 @@ Semicolon-delimited, one row per hour per station (EST-01, EST-02, EST-03):
 
 ## Next steps
 
-1. Build R/OpenAir microservice (Dockerfile + Plumber endpoints) — Phase 4
-   - timeVariation, polarPlot, polarAnnulus figures
-   - Activated via `USE_R_OPENAIR=true`
+The pipeline (Phases 1-3) is functionally complete. Remaining work is end-to-end
+validation: run the full flow (`ingest_excel` → `extrapolate_data` → `impute_data` →
+all section skills → `assemble_pdf`) against real client data and confirm the final
+PDF matches the company's formal report format. `reconstruct_memoria` is a separate,
+optional step for data-recovery cases (a raw instrument memory file that genuinely
+existed but was lost) and is not part of the normal report pipeline.
