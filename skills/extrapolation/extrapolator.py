@@ -24,6 +24,17 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+
+def _coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert object columns to numeric where ≥50% of values parse successfully.
+    Handles dot-decimal files (e.g. '1.67') when the CSV was read with decimal=','."""
+    for col in df.select_dtypes(include="object").columns:
+        converted = pd.to_numeric(df[col], errors="coerce")
+        if converted.notna().mean() > 0.5:
+            df[col] = converted
+    return df
+
+
 NON_SENSOR_PATTERNS = [
     "fecha", "date", "hora", "time", "site", "estacion",
     "station", "id", "codigo", "code", "nombre", "name", "sitio",
@@ -59,6 +70,8 @@ class ExtrapolationSkill:
         df = self._read_file(path)
         df = self._attach_datetime(df)
 
+        date_col = self._detect_col(df, COLUMN_ALIASES["date"])
+        time_col = self._detect_col(df, COLUMN_ALIASES["time"])
         station_col = self._detect_col(df, COLUMN_ALIASES["station"])
         sensor_cols = self._sensor_columns(df)
         wd_cols = wind_dir_columns if wind_dir_columns is not None else self._detect_wind_dir_cols(df, sensor_cols)
@@ -84,7 +97,7 @@ class ExtrapolationSkill:
         for station in stations:
             station_df = df[df[station_col] == station] if station_col else df
             for ts in new_timestamps:
-                row: dict = {"_datetime": ts, "date": ts.strftime("%Y-%m-%d"), "time": ts.strftime("%H:%M")}
+                row: dict = {"_datetime": ts, date_col: ts.strftime("%Y-%m-%d"), time_col: ts.strftime("%H:%M")}
                 if station_col:
                     row[station_col] = station
                 for col in sensor_cols:
@@ -167,10 +180,10 @@ class ExtrapolationSkill:
             except UnicodeDecodeError:
                 df = pd.read_csv(path, sep=";", decimal=",", encoding="latin-1")
             df.columns = [str(c).strip().lower() for c in df.columns]
-            return df
+            return _coerce_numeric(df)
         df = pd.read_excel(path)
         df.columns = [str(c).strip().lower() for c in df.columns]
-        return df
+        return _coerce_numeric(df)
 
     @staticmethod
     def _detect_col(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:

@@ -227,6 +227,17 @@ async def list_tools() -> list[types.Tool]:
                             "the calibration row. Defaults to [400, 300, 200, 100, 0]."
                         ),
                     },
+                    "calibration_offset_hours": {
+                        "type": "integer",
+                        "default": 2,
+                        "description": (
+                            "Hours after the padding-before start where the calibration row is "
+                            "placed. Defaults to 2, so if real data starts at 08:00 and "
+                            "retropolation goes back to 02:00, calibration lands at ~04:00. "
+                            "Use different offsets per instrument for multi-parameter stations "
+                            "(e.g. SO2=2, NO2=3) to avoid identical calibration timestamps."
+                        ),
+                    },
                     "unit_digit": {
                         "type": "array",
                         "items": {"type": "integer"},
@@ -519,7 +530,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 save_datetime=arguments.get("save_datetime"),
                 calibration_component=arguments.get("calibration_component", 1),
                 calibration_values=arguments.get("calibration_values"),
-                unit_digit=tuple(unit_digit) if unit_digit else (2, 3),
+                calibration_offset_hours=arguments.get("calibration_offset_hours", 2),
+                unit_digit=tuple(unit_digit) if unit_digit else (2, 2),
                 random_state=arguments.get("random_state"),
             )
 

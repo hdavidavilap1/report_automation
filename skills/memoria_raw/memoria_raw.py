@@ -11,17 +11,17 @@ Status/Caution/Alarm bit fields to flag which rows were reconstructed:
     padding-before hour), whose value is the average of the calibration gas
     concentrations.
 
-File format (derived from a real `_HA.csv` / `_HA_COMPILADO.CSV` pair):
-  - `;`-delimited, comma-decimal.
-  - 3 bracketed header lines, then 2 column-header lines, then data rows.
-  - Each data row: Date;Time; then 3x(Unit;Digit;Value) for Component1-3, then
-    16 Status bits (15..0), 64 Caution bits (63..0), 64 Alarm bits (63..0).
-  - Value = COMPILADO value x 1e6, rounded to 3 significant figures, formatted
-    as "[-]D,DDE±EE".
+File format (derived from a real `_HA.csv`):
+  - `,`-delimited, dot-decimal.
+  - 3 bracketed header lines (no trailing delimiters), then 2 column-header lines,
+    then data rows.
+  - Each data row: combined datetime, then 3×(Unit,Digit,Value) for Component1-3,
+    then 16 Status bits (15..0), 64 Caution bits (63..0), 64 Alarm bits (63..0).
+  - Value stored as-is (no unit scaling), formatted as "[+/-]X.XXXXXXE[+/-]EEE"
+    (always-signed, dot decimal, 6 decimal places, 3-digit exponent).
 """
 
 import logging
-from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Optional
 
@@ -31,6 +31,17 @@ import pandas as pd
 from skills.extrapolation.extrapolator import ExtrapolationSkill
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert object columns to numeric where ≥50% of values parse successfully.
+    Handles dot-decimal files (e.g. '1.67') when the CSV was read with decimal=','."""
+    for col in df.select_dtypes(include="object").columns:
+        converted = pd.to_numeric(df[col], errors="coerce")
+        if converted.notna().mean() > 0.5:
+            df[col] = converted
+    return df
+
 
 COLUMN_ALIASES = {
     "date":    ["date", "fecha"],
@@ -42,10 +53,13 @@ N_STATUS_BITS = 16
 N_CAUTION_BITS = 64
 N_ALARM_BITS = 64
 
-ALARM_BIT_MISSING = 6
-CAUTION_BIT_CALIBRATION = 32
+STATUS_BIT_MISSING = 7              # set on imputed rows in the Status block
+ALARM_BITS_CALIBRATION = [32, 33]   # DR bits set on the calibration row (second 63..0 block = Alarm)
 
 DEFAULT_CALIBRATION_VALUES = [400, 300, 200, 100, 0]
+
+WORKING_HOUR_START = 8
+WORKING_HOUR_END = 18
 
 
 class MemoriaRawSkill:
@@ -65,7 +79,8 @@ class MemoriaRawSkill:
         save_datetime: Optional[str] = None,
         calibration_component: int = 1,
         calibration_values: Optional[list[float]] = None,
-        unit_digit: tuple[int, int] = (2, 3),
+        calibration_offset_hours: int = 2,
+        unit_digit: tuple[int, int] = (2, 2),
         random_state: Optional[int] = None,
     ) -> dict:
         if not (1 <= len(component_columns) <= 3):
@@ -110,9 +125,13 @@ class MemoriaRawSkill:
         pad_before = pad_before.sort_values("_datetime").reset_index(drop=True)
         calibration_col = components[calibration_component - 1]
         calibration_value = float(np.mean(calibration_values))
-        pad_before.loc[0, calibration_col] = calibration_value
-        pad_before.loc[0, "_caution_dr"] = 1
-        calibration_timestamp = pad_before.loc[0, "_datetime"]
+
+        # Place calibration ~calibration_offset_hours after pad_before start
+        cal_target = pad_before["_datetime"].min() + pd.Timedelta(hours=calibration_offset_hours)
+        cal_idx = (pad_before["_datetime"] - cal_target).abs().idxmin()
+        pad_before.loc[cal_idx, calibration_col] = calibration_value
+        pad_before.loc[cal_idx, "_caution_dr"] = 1
+        calibration_timestamp = pad_before.loc[cal_idx, "_datetime"]
 
         full_df = (
             pd.concat([pad_before, real_window, pad_after], ignore_index=True)
@@ -126,7 +145,39 @@ class MemoriaRawSkill:
         else:
             minute = int(np.random.randint(0, 60))
             second = int(np.random.randint(0, 60))
-            save_ts = last_memory_timestamp + pd.Timedelta(hours=1, minutes=minute, seconds=second)
+            candidate = last_memory_timestamp + pd.Timedelta(hours=1)
+            if candidate.hour < WORKING_HOUR_START:
+                save_ts = candidate.normalize() + pd.Timedelta(
+                    hours=WORKING_HOUR_START, minutes=minute, seconds=second
+                )
+            elif candidate.hour >= WORKING_HOUR_END:
+                next_day = candidate.normalize() + pd.Timedelta(days=1)
+                save_ts = next_day + pd.Timedelta(
+                    hours=WORKING_HOUR_START, minutes=minute, seconds=second
+                )
+            else:
+                save_ts = candidate + pd.Timedelta(minutes=minute % 30, seconds=second)
+
+        # Align last row to floor(save_ts) - 1h so the file and save time are consistent.
+        target_last = save_ts.floor("h") - pd.Timedelta(hours=1)
+        current_last = full_df["_datetime"].max()
+        if target_last > current_last:
+            ts = current_last + pd.Timedelta(hours=1)
+            extra_rows = []
+            while ts <= target_last:
+                new_row = {"_datetime": ts, "_alarm_v": 0, "_caution_dr": 0}
+                for col in component_columns:
+                    new_row[col] = ExtrapolationSkill._hot_deck_draw(proc_df, col, ts.hour, is_circular=False)
+                extra_rows.append(new_row)
+                ts += pd.Timedelta(hours=1)
+            full_df = (
+                pd.concat([full_df, pd.DataFrame(extra_rows)], ignore_index=True)
+                .sort_values("_datetime")
+                .reset_index(drop=True)
+            )
+        elif target_last < current_last:
+            full_df = full_df[full_df["_datetime"] <= target_last].reset_index(drop=True)
+        last_memory_timestamp = target_last
 
         self._write_csv(
             output_path=output_path,
@@ -144,7 +195,7 @@ class MemoriaRawSkill:
             "rows_written": len(full_df),
             "real_window_rows": len(real_window),
             "padding_before_rows": len(pad_before),
-            "padding_after_rows": len(pad_after),
+            "padding_after_rows": len(full_df) - len(pad_before) - len(real_window),
             "alarmed_rows": alarmed_rows,
             "calibration_timestamp": str(calibration_timestamp),
             "calibration_value": calibration_value,
@@ -173,10 +224,10 @@ class MemoriaRawSkill:
             except UnicodeDecodeError:
                 df = pd.read_csv(path, sep=";", decimal=",", encoding="latin-1")
             df.columns = [str(c).strip().lower() for c in df.columns]
-            return df
+            return _coerce_numeric(df)
         df = pd.read_excel(path)
         df.columns = [str(c).strip().lower() for c in df.columns]
-        return df
+        return _coerce_numeric(df)
 
     @staticmethod
     def _detect_col(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
@@ -255,48 +306,42 @@ class MemoriaRawSkill:
         save_ts: pd.Timestamp,
         unit_digit: tuple[int, int],
     ) -> None:
+        T = ","
         lines = []
 
-        # Every line has 155 ;-delimited fields, matching the data rows
-        # (2 date/time + 3x3 unit/digit/value + 16 status + 64 caution + 64 alarm).
-        pad = ";" * 154
-        lines.append(f"[{equipment_name}]" + pad)
-        lines.append("[Data;Type-Integration;value]" + pad)
+        # Header lines have no trailing delimiters (matches instrument native format).
+        lines.append(f"[{equipment_name}]")
+        lines.append("[Data Type-Integration value]")
+        lines.append(f"[Save Time-{save_ts.strftime('%Y/%m/%d')} {save_ts.strftime('%H:%M:%S')}]")
         lines.append(
-            f"[Save;Time-{save_ts.strftime('%Y/%m/%d')};{save_ts.strftime('%H:%M:%S')}]" + pad
-        )
-        lines.append(
-            "Date;Component1;Component2;Component3;Status;Caution;Alarm" + (";" * 148)
+            "Date" + T + "Component1" + T * 3 +
+            "Component2" + T * 3 + "Component3" + T * 3 +
+            "Status" + T * 16 + "Caution" + T * 64 + "Alarm"
         )
 
-        status_nums = ";".join(str(i) for i in range(N_STATUS_BITS - 1, -1, -1))
-        caution_nums = ";".join(str(i) for i in range(N_CAUTION_BITS - 1, -1, -1))
-        alarm_nums = ";".join(str(i) for i in range(N_ALARM_BITS - 1, -1, -1))
+        status_nums = T.join(str(i) for i in range(N_STATUS_BITS - 1, -1, -1))
+        caution_nums = T.join(str(i) for i in range(N_CAUTION_BITS - 1, -1, -1))
+        alarm_nums = T.join(str(i) for i in range(N_ALARM_BITS - 1, -1, -1))
         lines.append(
-            ";Unit;Digit;Value;Unit;Digit;Value;Unit;Digit;Value;"
-            f"{status_nums};{caution_nums};{alarm_nums};"
+            f"{T}Unit{T}Digit{T}Value{T}Unit{T}Digit{T}Value{T}Unit{T}Digit{T}Value"
+            f"{T}{status_nums}{T}{caution_nums}{T}{alarm_nums}"
         )
 
         unit, digit = unit_digit
         for _, row in df.iterrows():
-            fields = [_fmt_date(row["_datetime"]), _fmt_time(row["_datetime"])]
+            fields = [_fmt_datetime(row["_datetime"])]
             for col in components:
                 if col is None:
-                    fields += [str(unit), str(digit), "0,00E+00"]
+                    fields += ["-", "-", "--------------"]
                 else:
-                    fields += [str(unit), str(digit), _format_value(row[col])]
+                    fields += [str(unit), str(digit), _format_value(row[col], digit)]
 
-            fields += _bit_array(N_STATUS_BITS)
-            fields += _bit_array(
-                N_CAUTION_BITS,
-                CAUTION_BIT_CALIBRATION if row["_caution_dr"] == 1 else None,
-            )
-            fields += _bit_array(
-                N_ALARM_BITS,
-                ALARM_BIT_MISSING if row["_alarm_v"] == 1 else None,
-            )
+            alarm_bits = ALARM_BITS_CALIBRATION if row["_caution_dr"] == 1 else None
+            fields += _bit_array(N_STATUS_BITS, STATUS_BIT_MISSING if row["_alarm_v"] == 1 else None)
+            fields += _bit_array(N_CAUTION_BITS)
+            fields += _bit_array(N_ALARM_BITS, alarm_bits)
 
-            lines.append(";".join(fields))
+            lines.append(T.join(fields))
 
         Path(output_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -305,34 +350,31 @@ class MemoriaRawSkill:
 # Module-level helpers
 # ─────────────────────────────────────────
 
-def _bit_array(total_bits: int, set_bit: Optional[int] = None) -> list[str]:
+def _bit_array(
+    total_bits: int,
+    set_bits: Optional[int | list[int]] = None,
+) -> list[str]:
     arr = [0] * total_bits
-    if set_bit is not None:
-        arr[(total_bits - 1) - set_bit] = 1
+    if set_bits is not None:
+        for bit in ([set_bits] if isinstance(set_bits, int) else set_bits):
+            arr[(total_bits - 1) - bit] = 1
     return [str(b) for b in arr]
 
 
-def _fmt_date(ts: pd.Timestamp) -> str:
-    return f"{ts.day}/{ts.month:02d}/{ts.year}"
+def _fmt_datetime(ts: pd.Timestamp) -> str:
+    return ts.strftime("%Y/%m/%d %H:%M:%S")
 
 
-def _fmt_time(ts: pd.Timestamp) -> str:
-    return f"{ts.hour}:{ts.minute:02d}:{ts.second:02d}"
-
-
-def _format_value(v: float) -> str:
-    """Scale by 1e6, round to 3 significant figures, format as '[-]D,DDE±EE'."""
-    scaled = Decimal(str(float(v))) * Decimal(1_000_000)
-    if scaled == 0:
-        return "0,00E+00"
-
-    sign = "-" if scaled < 0 else ""
-    abs_scaled = abs(scaled)
-    exponent = abs_scaled.adjusted()
-    quantum = Decimal(1).scaleb(exponent - 2)
-    rounded = abs_scaled.quantize(quantum, rounding=ROUND_HALF_UP)
-
-    rounded_exp = rounded.adjusted()
-    mantissa = rounded.scaleb(-rounded_exp)
-    mantissa_str = f"{mantissa:.2f}".replace(".", ",")
-    return f"{sign}{mantissa_str}E{rounded_exp:+03d}"
+def _format_value(v: float, digit: int = 6) -> str:
+    """Format as '[+/-]X.XXXXXXE[+/-]EEE'. Mantissa rounded to `digit` decimal places, zero-padded to 6."""
+    x = float(v)
+    if abs(x) == 0.0:
+        return "+0.000000E+000"
+    sign = "+" if x >= 0 else "-"
+    mantissa_str, exp_part = f"{abs(x):.6E}".split("E")
+    exp_int = int(exp_part)
+    mantissa_val = round(float(mantissa_str), digit)
+    if mantissa_val >= 10.0:  # rounding overflowed mantissa, re-normalize
+        mantissa_val /= 10.0
+        exp_int += 1
+    return f"{sign}{mantissa_val:.6f}E{exp_int:+04d}"

@@ -5,7 +5,10 @@ import pytest
 
 from skills.extrapolation.extrapolator import ExtrapolationSkill
 from skills.imputation.imputer import ImputationSkill
-from skills.memoria_raw.memoria_raw import MemoriaRawSkill, _format_value
+from skills.memoria_raw.memoria_raw import (
+    MemoriaRawSkill, WORKING_HOUR_START, WORKING_HOUR_END, _format_value,
+    ALARM_BITS_CALIBRATION, STATUS_BIT_MISSING, N_STATUS_BITS,
+)
 
 SAMPLE_CSV = Path(__file__).parent.parent / "data" / "sample_air_quality_csv.csv"
 N_HOURS = 5
@@ -44,7 +47,7 @@ def _read_lines(path):
 
 
 def _data_rows(lines):
-    return [line.split(";") for line in lines[5:] if line.strip()]
+    return [line.split(",") for line in lines[5:] if line.strip()]
 
 
 class TestReconstruct:
@@ -88,7 +91,7 @@ class TestReconstruct:
             + result["padding_after_rows"]
         )
 
-    def test_each_data_row_has_155_fields(self, processed_path):
+    def test_each_data_row_has_154_fields(self, processed_path):
         skill.reconstruct(
             original_path=str(SAMPLE_CSV),
             processed_path=processed_path,
@@ -99,7 +102,7 @@ class TestReconstruct:
         )
         lines = _read_lines(OUTPUT_CSV)
         for row in _data_rows(lines):
-            assert len(row) == 155
+            assert len(row) == 154
 
     def test_header_lines(self, processed_path):
         skill.reconstruct(
@@ -113,9 +116,12 @@ class TestReconstruct:
         )
         lines = _read_lines(OUTPUT_CSV)
         assert lines[0].startswith("[Equipment-1:APNA]")
-        assert lines[1].startswith("[Data;Type-Integration;value]")
-        assert lines[2].startswith("[Save;Time-")
-        assert lines[3].startswith("Date;Component1;Component2;Component3;Status;Caution;Alarm")
+        assert lines[1].startswith("[Data Type-Integration value]")
+        assert lines[2].startswith("[Save Time-")
+        assert lines[3].startswith("Date,Component1")
+        # Column-header line ends at "Alarm" (91 fields); sub-header has all 154
+        assert len(lines[3].split(",")) == 91
+        assert len(lines[4].split(",")) == 154
 
     def test_exactly_one_calibration_row(self, processed_path):
         result = skill.reconstruct(
@@ -129,20 +135,18 @@ class TestReconstruct:
         lines = _read_lines(OUTPUT_CSV)
         rows = _data_rows(lines)
 
-        caution_blocks = [row[27:91] for row in rows]
-        calibration_rows = [i for i, c in enumerate(caution_blocks) if c[31] == "1"]
+        # Alarm block: cols 90-153 (64 bits). Calibration sets ALARM_BITS_CALIBRATION.
+        from skills.memoria_raw.memoria_raw import N_ALARM_BITS
+        cal_indices = [(N_ALARM_BITS - 1) - b for b in ALARM_BITS_CALIBRATION]
+        alarm_blocks = [row[90:154] for row in rows]
+        calibration_rows = [i for i, a in enumerate(alarm_blocks) if all(a[idx] == "1" for idx in cal_indices)]
         assert len(calibration_rows) == 1
-        # bit 32 -> index (64-1) - 32 = 31 from the start of the 64-bit caution block
-        assert rows[calibration_rows[0]][:2] == [
-            f"{pd.Timestamp(result['calibration_timestamp']).day}/"
-            f"{pd.Timestamp(result['calibration_timestamp']).month:02d}/"
-            f"{pd.Timestamp(result['calibration_timestamp']).year}",
-            f"{pd.Timestamp(result['calibration_timestamp']).hour}:"
-            f"{pd.Timestamp(result['calibration_timestamp']).minute:02d}:"
-            f"{pd.Timestamp(result['calibration_timestamp']).second:02d}",
-        ]
-        # it's the very first row (start of padding_before)
-        assert calibration_rows[0] == 0
+
+        ts = pd.Timestamp(result["calibration_timestamp"])
+        expected_dt = ts.strftime("%Y/%m/%d %H:%M:%S")
+        assert rows[calibration_rows[0]][0] == expected_dt
+        # Calibration row must be within the padding-before window (not necessarily first)
+        assert calibration_rows[0] < result["padding_before_rows"]
 
     def test_alarmed_rows_match_missing_cells(self, processed_path):
         result = skill.reconstruct(
@@ -156,14 +160,36 @@ class TestReconstruct:
         lines = _read_lines(OUTPUT_CSV)
         rows = _data_rows(lines)
 
-        alarm_blocks = [row[91:155] for row in rows]
-        alarmed_rows = [i for i, a in enumerate(alarm_blocks) if a[57] == "1"]
-        # bit 6 -> index (64-1) - 6 = 57
-        assert len(alarmed_rows) == result["alarmed_rows"]
+        # Status block: cols 10-25 (16 bits). Imputed rows set STATUS_BIT_MISSING.
+        status_idx = (N_STATUS_BITS - 1) - STATUS_BIT_MISSING
+        status_blocks = [row[10:26] for row in rows]
+        alarm_blocks = [row[90:154] for row in rows]
+        flagged_rows = [i for i, s in enumerate(status_blocks) if s[status_idx] == "1"]
+        assert len(flagged_rows) == result["alarmed_rows"]
         assert result["alarmed_rows"] >= 1
+        # Imputed rows must have all-zero Alarm block (only Status is flagged for missing data).
+        for idx in flagged_rows:
+            assert all(b == "0" for b in alarm_blocks[idx])
+
+    def test_inactive_components_use_dashes(self, processed_path):
+        skill.reconstruct(
+            original_path=str(SAMPLE_CSV),
+            processed_path=processed_path,
+            component_columns=["component_1"],
+            output_path=str(OUTPUT_CSV),
+            station=STATION,
+            random_state=42,
+        )
+        lines = _read_lines(OUTPUT_CSV)
+        rows = _data_rows(lines)
+        # Component2 and Component3 inactive: cols 4-9 should be "-","-","--------------" twice
+        for row in rows:
+            assert row[4] == "-"
+            assert row[5] == "-"
+            assert row[6] == "--------------"
 
     def test_value_formatting_roundtrip(self, processed_path):
-        result = skill.reconstruct(
+        skill.reconstruct(
             original_path=str(SAMPLE_CSV),
             processed_path=processed_path,
             component_columns=COMPONENT_COLUMNS,
@@ -171,24 +197,21 @@ class TestReconstruct:
             station=STATION,
             random_state=42,
         )
-        df = pd.read_parquet(processed_path)
-
         lines = _read_lines(OUTPUT_CSV)
         rows = _data_rows(lines)
-        # first non-calibration row: compare component_1 value magnitude
+        # first non-calibration row: Value1 is at col 3 (combined datetime at 0, Unit at 1, Digit at 2)
         row = rows[1]
-        value_str = row[4]
-        parsed = float(value_str.replace(",", "."))
-        # all values should be on the order of original * 1e6
+        value_str = row[3]
+        parsed = float(value_str)
         assert parsed > 0
 
     def test_format_value_edge_case(self):
-        assert _format_value(1.645) == "1,65E+06"
+        assert _format_value(1.645) == "+1.645000E+000"
 
     def test_format_value_zero(self):
-        assert _format_value(0) == "0,00E+00"
+        assert _format_value(0) == "+0.000000E+000"
 
-    def test_save_datetime_after_last_memory(self, processed_path):
+    def test_save_datetime_in_working_hours(self, processed_path):
         result = skill.reconstruct(
             original_path=str(SAMPLE_CSV),
             processed_path=processed_path,
@@ -199,12 +222,10 @@ class TestReconstruct:
         )
         save_ts = pd.Timestamp(result["save_datetime"])
         last_ts = pd.Timestamp(result["last_memory_timestamp"])
-        assert save_ts > last_ts
-        assert (save_ts.floor("h") - pd.Timedelta(hours=1)) == last_ts
+        assert save_ts >= last_ts + pd.Timedelta(hours=1)
+        assert WORKING_HOUR_START <= save_ts.hour < WORKING_HOUR_END
 
     def test_rejects_when_no_padding_before(self, processed_path):
-        # Use the original (un-extrapolated) data as both inputs so there's
-        # no padding-before window for the calibration row.
         with pytest.raises(ValueError):
             skill.reconstruct(
                 original_path=str(SAMPLE_CSV),
