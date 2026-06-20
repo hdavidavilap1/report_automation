@@ -1,0 +1,8 @@
+mcp==1.27.2
+pandas==3.0.3
+openpyxl==3.1.5
+pyarrow==24.0.0
+scikit-learn==1.9.0
+numpy==2.4.6
+matplotlib==3.10.9
+windrose==1.10.0

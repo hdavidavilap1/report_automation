@@ -12,10 +12,13 @@ import mcp.types as types
 from mcp.server import Server
 
 from skills.imputation.imputer import ImputationSkill
+from skills.extrapolation.extrapolator import ExtrapolationSkill
+from skills.memoria_raw.memoria_raw import MemoriaRawSkill
 from skills.ica.ica import generate_report as ica_generate_report
 from skills.meteorologia.meteo import generate_report as meteo_generate_report
 from skills.conclusiones.conclusiones import generate_report as conclusiones_generate_report
 from skills.pdf_assembler.assembler import generate_report as pdf_generate_report
+from skills.portada_generalidades.portada_generalidades import generate_report as portada_generate_report
 from skills.resultados_analisis.resultados import generate_report as resultados_generate_report
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -23,6 +26,8 @@ logger = logging.getLogger("air-quality-mcp")
 
 app = Server("air-quality-reports")
 imputer = ImputationSkill()
+extrapolator = ExtrapolationSkill()
+memoria_raw = MemoriaRawSkill()
 
 
 # ─────────────────────────────────────────────────────────
@@ -46,6 +51,45 @@ async def list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Absolute path to the .xlsx or .xls file.",
                     }
+                },
+                "required": ["file_path"],
+            },
+        ),
+        types.Tool(
+            name="extrapolate_data",
+            description=(
+                "Extends a time series before its start (retropolation) and after its "
+                "end (forecast) by n_hours, using a hot-deck strategy: for each new hour, "
+                "draws a reference value from real measurements at the same hour-of-day "
+                "and adds std-based perturbation (circular for wind direction). "
+                "Saves the extended dataset as a parquet file next to the input. "
+                "Run this before impute_data so any remaining gaps in the extended "
+                "range are filled during imputation."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the Excel, CSV, or parquet file.",
+                    },
+                    "n_hours": {
+                        "type": "integer",
+                        "default": 10,
+                        "description": (
+                            "Number of hours to extend before the start and after "
+                            "the end of the time series."
+                        ),
+                    },
+                    "wind_dir_columns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Explicit list of wind-direction columns (circular, "
+                            "0-360°). If omitted, auto-detected from numeric columns "
+                            "with range > 90°."
+                        ),
+                    },
                 },
                 "required": ["file_path"],
             },
@@ -108,6 +152,103 @@ async def list_tools() -> list[types.Tool]:
                     },
                 },
                 "required": ["original_path", "imputed_path"],
+            },
+        ),
+        types.Tool(
+            name="reconstruct_memoria",
+            description=(
+                "Reconstructs a lost APNA-370 raw memory-dump file (`_HA.csv`) from data that "
+                "has already gone through extrapolate_data and impute_data, using the "
+                "instrument's own Status/Caution/Alarm bit fields to mark which rows are "
+                "reconstructed: rows in the real measurement window whose original reading was "
+                "missing get Alarm bit 6 ('V') = 1, and the reconstructed calibration row "
+                "(first padding-before hour, set to the average of the calibration gas "
+                "concentrations) gets Caution bit 32 ('DR') = 1. Intended for data-recovery "
+                "cases where the raw memory file genuinely existed but was lost; provenance of "
+                "reconstructed rows stays auditable via these flags."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "original_path": {
+                        "type": "string",
+                        "description": (
+                            "Path to the original (pre-imputation) data file — defines the real "
+                            "measurement window and which cells were originally missing."
+                        ),
+                    },
+                    "processed_path": {
+                        "type": "string",
+                        "description": (
+                            "Path to the parquet produced by extrapolate_data → impute_data "
+                            "(extended range, no NaNs)."
+                        ),
+                    },
+                    "component_columns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "1-3 column names to map to Component1/2/3 in the raw file, in order."
+                        ),
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Path where the reconstructed _HA.csv will be written.",
+                    },
+                    "station": {
+                        "type": "string",
+                        "description": "Station to select if the data contains multiple stations.",
+                    },
+                    "equipment_name": {
+                        "type": "string",
+                        "default": "Equipment-1:APNA",
+                        "description": "Equipment identifier written in the first header line.",
+                    },
+                    "save_datetime": {
+                        "type": "string",
+                        "description": (
+                            "ISO datetime of the memory download. If omitted, auto-derived as "
+                            "last_memory_timestamp + 1h + random(minute, second)."
+                        ),
+                    },
+                    "calibration_component": {
+                        "type": "integer",
+                        "default": 1,
+                        "description": (
+                            "1-3, which component_columns entry receives the calibration value "
+                            "in the reconstructed calibration row."
+                        ),
+                    },
+                    "calibration_values": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "description": (
+                            "Calibration gas concentrations (ppb) whose average is written to "
+                            "the calibration row. Defaults to [400, 300, 200, 100, 0]."
+                        ),
+                    },
+                    "calibration_offset_hours": {
+                        "type": "integer",
+                        "default": 2,
+                        "description": (
+                            "Hours after the padding-before start where the calibration row is "
+                            "placed. Defaults to 2, so if real data starts at 08:00 and "
+                            "retropolation goes back to 02:00, calibration lands at ~04:00. "
+                            "Use different offsets per instrument for multi-parameter stations "
+                            "(e.g. SO2=2, NO2=3) to avoid identical calibration timestamps."
+                        ),
+                    },
+                    "unit_digit": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Constant (Unit, Digit) pair written for each component. Defaults to (2, 3).",
+                    },
+                    "random_state": {
+                        "type": "integer",
+                        "description": "Optional seed for reproducible random save_datetime generation.",
+                    },
+                },
+                "required": ["original_path", "processed_path", "component_columns", "output_path"],
             },
         ),
         types.Tool(
@@ -210,10 +351,41 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="generate_portada",
+            description=(
+                "Generates the cover page, control page, table of contents, lists of "
+                "annexes/figures/tables/graphs, glossary, abbreviations, and Sections "
+                "1–4 (Datos Básicos, Introducción, Objetivos, Generalidades) of the air "
+                "quality report. Produces a single self-contained HTML report."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "config": {
+                        "type": "object",
+                        "description": (
+                            "Full report configuration dict — report code/type, period, "
+                            "client and final-client info, monitoring stations, emission "
+                            "sources, personnel, revision history, compliance tables, "
+                            "uncertainty and environmental-conditions tables, figure paths, "
+                            "etc. See data/sample_portada_config.json for the full structure."
+                        ),
+                    },
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Directory where the HTML report will be saved.",
+                    },
+                },
+                "required": ["config", "output_dir"],
+            },
+        ),
+        types.Tool(
             name="assemble_pdf",
             description=(
-                "Assembles the four section HTML reports into a single paginated PDF. "
+                "Assembles the section HTML reports into a single paginated PDF. "
                 "Accepts the report_path from each section's generate_* tool output. "
+                "When portada_html is supplied, its own cover/control/TOC/glossary "
+                "pages replace the auto-generated cover page. "
                 "Uses Chrome headless for rendering (full CSS + base64 images). "
                 "Falls back to WeasyPrint or saves merged HTML if Chrome is unavailable."
             ),
@@ -223,6 +395,15 @@ async def list_tools() -> list[types.Tool]:
                     "output_dir": {
                         "type": "string",
                         "description": "Directory where the PDF and merged HTML will be saved.",
+                    },
+                    "portada_html": {
+                        "type": "string",
+                        "description": (
+                            "Path to seccion1_4_portada_generalidades.html "
+                            "(report_path from generate_portada). When provided, replaces "
+                            "the auto-generated cover page with its own cover, control "
+                            "page, TOC, lists, glossary and Sections 1–4."
+                        ),
                     },
                     "meteo_html": {
                         "type": "string",
@@ -317,6 +498,13 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         if name == "ingest_excel":
             result = imputer.ingest(arguments["file_path"])
 
+        elif name == "extrapolate_data":
+            result = extrapolator.extrapolate(
+                file_path=arguments["file_path"],
+                n_hours=arguments.get("n_hours", 10),
+                wind_dir_columns=arguments.get("wind_dir_columns"),
+            )
+
         elif name == "impute_data":
             result = imputer.impute(
                 file_path=arguments["file_path"],
@@ -328,6 +516,23 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = imputer.comparison_report(
                 original_path=arguments["original_path"],
                 imputed_path=arguments["imputed_path"],
+            )
+
+        elif name == "reconstruct_memoria":
+            unit_digit = arguments.get("unit_digit")
+            result = memoria_raw.reconstruct(
+                original_path=arguments["original_path"],
+                processed_path=arguments["processed_path"],
+                component_columns=arguments["component_columns"],
+                output_path=arguments["output_path"],
+                station=arguments.get("station"),
+                equipment_name=arguments.get("equipment_name", "Equipment-1:APNA"),
+                save_datetime=arguments.get("save_datetime"),
+                calibration_component=arguments.get("calibration_component", 1),
+                calibration_values=arguments.get("calibration_values"),
+                calibration_offset_hours=arguments.get("calibration_offset_hours", 2),
+                unit_digit=tuple(unit_digit) if unit_digit else (2, 2),
+                random_state=arguments.get("random_state"),
             )
 
         elif name == "generate_ica":
@@ -342,9 +547,16 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 output_dir=arguments["output_dir"],
             )
 
+        elif name == "generate_portada":
+            result = portada_generate_report(
+                config=arguments["config"],
+                output_dir=arguments["output_dir"],
+            )
+
         elif name == "assemble_pdf":
             result = pdf_generate_report(
                 output_dir=arguments["output_dir"],
+                portada_html=arguments.get("portada_html"),
                 meteo_html=arguments.get("meteo_html"),
                 resultados_html=arguments.get("resultados_html"),
                 ica_html=arguments.get("ica_html"),

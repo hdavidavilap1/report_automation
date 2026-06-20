@@ -166,14 +166,15 @@ body {
 
 
 def _build_merged_html(
-    cover: str,
+    cover: str | None,
     sections: list[tuple[str, str]],  # [(section_id, body_html), ...]
     extra_styles: str = "",
 ) -> str:
-    parts = [f'<div id="cover">{cover}</div>']
-    for i, (sid, body) in enumerate(sections):
-        cls = ' class="section-break"' if i == 0 else ' class="section-break"'
-        parts.append(f'<div id="{sid}"{cls}>{body}</div>')
+    parts = []
+    if cover:
+        parts.append(f'<div id="cover">{cover}</div>')
+    for sid, body in sections:
+        parts.append(f'<div id="{sid}" class="section-break">{body}</div>')
 
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -247,6 +248,7 @@ def _render_weasyprint(html_path: str, pdf_path: str) -> None:
 
 def generate_report(
     output_dir: str,
+    portada_html: str | None = None,
     meteo_html: str | None = None,
     resultados_html: str | None = None,
     ica_html: str | None = None,
@@ -265,6 +267,11 @@ def generate_report(
     ----------
     output_dir:
         Directory where the assembled HTML and PDF will be saved.
+    portada_html:
+        Path to ``seccion1_4_portada_generalidades.html`` (from ``generate_portada``).
+        Already includes its own cover page, control page, table of contents,
+        lists, glossary and Sections 1–4 — when provided, the auto-generated
+        cover page below is skipped in favour of this one.
     meteo_html:
         Path to ``seccion5_meteorologia.html`` (from ``generate_meteorologia``).
     resultados_html:
@@ -299,10 +306,11 @@ def generate_report(
 
     # ── collect sections ──────────────────────────────────────────────────────
     section_map = [
-        ("section-5", meteo_html,       "Sección 5 — Meteorología"),
-        ("section-6", resultados_html,  "Sección 6 — Resultados del Análisis"),
-        ("section-7", ica_html,         "Sección 7 — ICA"),
-        ("section-8", conclusiones_html,"Sección 8 — Conclusiones"),
+        ("section-portada", portada_html,  "Portada, Generalidades y Secciones 1–4"),
+        ("section-5",       meteo_html,       "Sección 5 — Meteorología"),
+        ("section-6",       resultados_html,  "Sección 6 — Resultados del Análisis"),
+        ("section-7",       ica_html,         "Sección 7 — ICA"),
+        ("section-8",       conclusiones_html,"Sección 8 — Conclusiones"),
     ]
 
     sections: list[tuple[str, str]] = []
@@ -322,16 +330,18 @@ def generate_report(
     if not sections:
         raise ValueError("No section HTML files provided.")
 
-    # ── build cover ───────────────────────────────────────────────────────────
-    cover = _cover_html(
-        title=title,
-        subtitle=subtitle,
-        period_start=period_start,
-        period_end=period_end,
-        location=location,
-        company_name=company_name,
-        report_number=report_number,
-    )
+    # ── build cover (skipped when portada_html supplies its own) ──────────────
+    cover = None
+    if not portada_html:
+        cover = _cover_html(
+            title=title,
+            subtitle=subtitle,
+            period_start=period_start,
+            period_end=period_end,
+            location=location,
+            company_name=company_name,
+            report_number=report_number,
+        )
 
     # ── merge ─────────────────────────────────────────────────────────────────
     merged_html = _build_merged_html(
