@@ -84,6 +84,7 @@ class MemoriaRawSkill:
         calibration_values: Optional[list[float]] = None,
         calibration_offset_hours: int = 2,
         unit_digit: tuple[int, int] = (2, 2),
+        component_slots: Optional[list[int]] = None,
         random_state: Optional[int] = None,
     ) -> dict:
         if not (1 <= len(component_columns) <= 3):
@@ -92,7 +93,15 @@ class MemoriaRawSkill:
             raise ValueError(
                 f"calibration_component must be between 1 and {len(component_columns)}."
             )
-        components = list(component_columns) + [None] * (3 - len(component_columns))
+        if component_slots is None:
+            component_slots = list(range(1, len(component_columns) + 1))
+        if len(component_slots) != len(component_columns):
+            raise ValueError("component_slots must have the same length as component_columns.")
+        if len(set(component_slots)) != len(component_slots) or any(s not in (1, 2, 3) for s in component_slots):
+            raise ValueError("component_slots must be distinct values from {1, 2, 3}.")
+        components: list[Optional[str]] = [None, None, None]
+        for col, slot in zip(component_columns, component_slots):
+            components[slot - 1] = col
         calibration_values = calibration_values or DEFAULT_CALIBRATION_VALUES
 
         if random_state is not None:
@@ -150,7 +159,7 @@ class MemoriaRawSkill:
         elif required_first > current_first:
             pad_before = pad_before[pad_before["_datetime"] >= required_first].reset_index(drop=True)
 
-        calibration_col = components[calibration_component - 1]
+        calibration_col = component_columns[calibration_component - 1]
         calibration_value = float(np.mean(calibration_values))
         calibration_value *= 1 + np.random.uniform(-CALIBRATION_JITTER_PCT, CALIBRATION_JITTER_PCT)
 
@@ -404,15 +413,12 @@ def _fmt_datetime(ts: pd.Timestamp) -> str:
 
 
 def _format_value(v: float, digit: int = 6) -> str:
-    """Format as '[+/-]X.XXXXXXE[+/-]EEE'. Mantissa rounded to `digit` decimal places, zero-padded to 6."""
-    x = float(v)
+    """Format as '[+/-]X.XXXXXXE[+/-]EEE'. Real value rounded to `digit` decimal places
+    (matching the instrument's declared display precision), then written in scientific
+    notation with a 6-decimal mantissa (zero-padded)."""
+    x = round(float(v), digit)
     if abs(x) == 0.0:
         return "+0.000000E+000"
     sign = "+" if x >= 0 else "-"
     mantissa_str, exp_part = f"{abs(x):.6E}".split("E")
-    exp_int = int(exp_part)
-    mantissa_val = round(float(mantissa_str), digit)
-    if mantissa_val >= 10.0:  # rounding overflowed mantissa, re-normalize
-        mantissa_val /= 10.0
-        exp_int += 1
-    return f"{sign}{mantissa_val:.6f}E{exp_int:+04d}"
+    return f"{sign}{mantissa_str}E{int(exp_part):+04d}"

@@ -188,6 +188,24 @@ class TestReconstruct:
             assert row[5] == "-"
             assert row[6] == "--------------"
 
+    def test_component_slot_places_value_in_chosen_slot(self, processed_path):
+        skill.reconstruct(
+            original_path=str(SAMPLE_CSV),
+            processed_path=processed_path,
+            component_columns=["component_1"],
+            component_slots=[2],
+            output_path=str(OUTPUT_CSV),
+            station=STATION,
+            random_state=42,
+        )
+        lines = _read_lines(OUTPUT_CSV)
+        rows = _data_rows(lines)
+        # Component1 (cols 1-3) and Component3 (cols 7-9) inactive; Component2 (cols 4-6) active.
+        for row in rows:
+            assert row[1] == "-" and row[2] == "-" and row[3] == "--------------"
+            assert row[4] != "-"
+            assert row[7] == "-" and row[8] == "-" and row[9] == "--------------"
+
     def test_value_formatting_roundtrip(self, processed_path):
         skill.reconstruct(
             original_path=str(SAMPLE_CSV),
@@ -210,6 +228,11 @@ class TestReconstruct:
 
     def test_format_value_zero(self):
         assert _format_value(0) == "+0.000000E+000"
+
+    def test_format_value_rounds_real_value_not_mantissa(self):
+        # Digit=2 means 2 decimal places of the real reading, regardless of exponent.
+        assert _format_value(10.73, digit=2) == "+1.073000E+001"
+        assert _format_value(10.7324, digit=2) == "+1.073000E+001"
 
     def test_save_datetime_in_working_hours(self, processed_path):
         result = skill.reconstruct(
