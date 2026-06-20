@@ -57,6 +57,9 @@ STATUS_BIT_MISSING = 7              # set on imputed rows in the Status block
 ALARM_BITS_CALIBRATION = [32, 33]   # DR bits set on the calibration row (second 63..0 block = Alarm)
 
 DEFAULT_CALIBRATION_VALUES = [400, 300, 200, 100, 0]
+CALIBRATION_JITTER_PCT = 0.02   # ±2% realistic noise around the nominal calibration mean
+MIN_HOURS_BEFORE_REAL_START = 7  # memory must start at least this many hours before the first real reading
+MAX_EXTRA_HOURS_BEFORE_START = 6  # plus a random 0-N extra hours on top, for variability across files
 
 WORKING_HOUR_START = 8
 WORKING_HOUR_END = 18
@@ -123,8 +126,33 @@ class MemoriaRawSkill:
         alarmed_rows = self._mark_missing_rows(orig_df, real_window, component_columns)
 
         pad_before = pad_before.sort_values("_datetime").reset_index(drop=True)
+
+        # Memory must start at a working hour, at least MIN_HOURS_BEFORE_REAL_START before real_start,
+        # plus a random 0-MAX_EXTRA_HOURS_BEFORE_START extra hours for variability across files.
+        extra_hours = int(np.random.randint(0, MAX_EXTRA_HOURS_BEFORE_START + 1))
+        margin_target = real_start - pd.Timedelta(hours=MIN_HOURS_BEFORE_REAL_START + extra_hours)
+        required_first = _latest_working_hour_at_or_before(margin_target)
+        current_first = pad_before["_datetime"].min()
+        if required_first < current_first:
+            ts = current_first - pd.Timedelta(hours=1)
+            extra_rows = []
+            while ts >= required_first:
+                new_row = {"_datetime": ts, "_alarm_v": 0, "_caution_dr": 0}
+                for col in component_columns:
+                    new_row[col] = ExtrapolationSkill._hot_deck_draw(proc_df, col, ts.hour, is_circular=False)
+                extra_rows.append(new_row)
+                ts -= pd.Timedelta(hours=1)
+            pad_before = (
+                pd.concat([pd.DataFrame(extra_rows), pad_before], ignore_index=True)
+                .sort_values("_datetime")
+                .reset_index(drop=True)
+            )
+        elif required_first > current_first:
+            pad_before = pad_before[pad_before["_datetime"] >= required_first].reset_index(drop=True)
+
         calibration_col = components[calibration_component - 1]
         calibration_value = float(np.mean(calibration_values))
+        calibration_value *= 1 + np.random.uniform(-CALIBRATION_JITTER_PCT, CALIBRATION_JITTER_PCT)
 
         # Place calibration ~calibration_offset_hours after pad_before start
         cal_target = pad_before["_datetime"].min() + pd.Timedelta(hours=calibration_offset_hours)
@@ -349,6 +377,16 @@ class MemoriaRawSkill:
 # ─────────────────────────────────────────
 # Module-level helpers
 # ─────────────────────────────────────────
+
+def _latest_working_hour_at_or_before(ts: pd.Timestamp) -> pd.Timestamp:
+    """Latest whole-hour timestamp <= ts that falls within [WORKING_HOUR_START, WORKING_HOUR_END)."""
+    if WORKING_HOUR_START <= ts.hour < WORKING_HOUR_END:
+        return ts.normalize() + pd.Timedelta(hours=ts.hour)
+    if ts.hour >= WORKING_HOUR_END:
+        return ts.normalize() + pd.Timedelta(hours=WORKING_HOUR_END - 1)
+    prev_day = ts.normalize() - pd.Timedelta(days=1)
+    return prev_day + pd.Timedelta(hours=WORKING_HOUR_END - 1)
+
 
 def _bit_array(
     total_bits: int,
