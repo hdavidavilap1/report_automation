@@ -2,10 +2,10 @@ import sys
 sys.path.insert(0, '/home/hdap/Documents/air-quality-mcp')
 from skills.extrapolation.extrapolator import ExtrapolationSkill
 from skills.imputation.imputer import ImputationSkill
-from skills.memoria_raw.memoria_raw import MemoriaRawSkill
+from skills.memoria_raw_nh3.memoria_raw_nh3 import MemoriaRawNH3Skill
 
-src = '/home/hdap/Downloads/TRS_EMVARIAS_441.csv'
-out = '/home/hdap/Downloads/TRS_EMVARIAS_441_raw_memory.csv'
+src = '/home/hdap/Downloads/TRS_EMVARIAS_389_03.csv'
+out = '/home/hdap/Downloads/TRS_EMVARIAS_389_03_raw_memory_nh3.csv'
 
 print('=== Step 1: Extrapolate ===')
 ext = ExtrapolationSkill()
@@ -27,20 +27,21 @@ r2 = imp.impute(
 print(r2)
 
 print()
-print('=== Step 3: Reconstruct memory ===')
-mem = MemoriaRawSkill()
+print('=== Step 3: Reconstruct memory (Component2 -> Component1 < Component2) ===')
+mem = MemoriaRawNH3Skill()
 r3 = mem.reconstruct(
     original_path=src,
     processed_path=r2['output_path'],
-    component_columns=['trs ppb'],
+    component2_column='trs ppb',
     output_path=out,
     station='s1',
     equipment_name='Equipment-1:APNA370',
-    calibration_component=1,                  # index (1-based) into component_columns to calibrate
+    component2_slot=2,                           # Component slot where the real channel is wired
+    unit_digit=(1, 2),                           # (Unit, Digit) instrument metadata; Digit = decimal precision
+    component1_fraction_range=(0.3, 0.7),        # Component1 = Component2 * fraction (fraction drawn once per run)
+    calibration_component=1,                     # index (1-based) into component_columns=[component2_column] to calibrate
     calibration_values=[400, 300, 200, 100, 0],  # nominal calibration gas concentrations (ppb)
-    calibration_offset_hours=2,                # hours after padding-before start to place the calibration row
-    unit_digit=(1, 2),                         # (Unit, Digit) instrument metadata; Digit = decimal precision
+    calibration_offset_hours=2,                  # hours after padding-before start to place the calibration row
     random_state=42,
-    component_slots = [2]
 )
 print(r3)
