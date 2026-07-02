@@ -18,7 +18,7 @@ L-file field rules:
   (ranges for random fields derived from the reference instrument file)
 
 Output filename convention:
-  EO {equipment_code}_{station_id}_{YYYY-MM-DD}_{HH-MM}-{M|L}.dat
+  {equipment_code}_{chunk}_{station_id}_{YYYY-MM-DD}_{HH-MM}-{M|L}.dat
 """
 
 import logging
@@ -326,8 +326,9 @@ class MemoriaRawMPSkill:
 
             first_ts = minute_rows[0][0]
             ts_tag = first_ts.strftime("%Y-%m-%d_%H-%M")
-            m_path = out_dir / f"EO {equipment_code}_{station_id}_{ts_tag}-M.dat"
-            l_path = out_dir / f"EO {equipment_code}_{station_id}_{ts_tag}-L.dat"
+            chunk = seg_idx + 1
+            m_path = out_dir / f"{equipment_code}_{chunk:03d}_{ts_tag}-M.dat"
+            l_path = out_dir / f"{equipment_code}_{chunk:03d}_{ts_tag}-L.dat"
 
             self._write_m(m_path, minute_rows, serial_no)
             self._write_l(l_path, minute_rows, serial_no, rng)

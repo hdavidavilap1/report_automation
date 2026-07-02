@@ -75,11 +75,11 @@ class TestMemoriaRawMP:
             assert Path(seg["m_path"]).exists()
             assert Path(seg["l_path"]).exists()
 
-    def test_segment_filenames_contain_equipment_and_station(self, reconstruction):
-        for seg in reconstruction["segments"]:
+    def test_segment_filenames_contain_equipment_and_chunk(self, reconstruction):
+        for i, seg in enumerate(reconstruction["segments"]):
             m_name = Path(seg["m_path"]).name
             assert "18A20020" in m_name
-            assert "001" in m_name
+            assert f"{i + 1:03d}" in m_name
             assert m_name.endswith("-M.dat")
             l_name = Path(seg["l_path"]).name
             assert l_name.endswith("-L.dat")
