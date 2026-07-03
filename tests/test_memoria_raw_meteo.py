@@ -12,6 +12,9 @@ from skills.memoria_raw_meteo.memoria_raw_meteo import (
     _DAVIS_COLS,
     _format_time,
     _parse_davis_time,
+    WORKING_HOUR_START,
+    WORKING_HOUR_END,
+    MIN_HOURS_BEFORE_REAL_START,
 )
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -26,9 +29,9 @@ extrapolator = ExtrapolationSkill()
 imputer      = ImputationSkill()
 
 N_HOURS    = 48
-GAP_START  = 10   # first gap hour (inclusive)
-GAP_END    = 20   # last gap hour (exclusive)
-N_GAP      = GAP_END - GAP_START
+GAP_HOUR_START = 10   # first gap hour in the 48-hour test dataset (inclusive)
+GAP_HOUR_END   = 20   # last gap hour (exclusive)
+N_GAP      = GAP_HOUR_END - GAP_HOUR_START
 N_ORIGINAL = N_HOURS - N_GAP
 
 _WIND_CARDINALS = list(_CARDINAL_DEG.keys())
@@ -60,7 +63,7 @@ def _make_davis_txt(path: Path):
         dt = base + pd.Timedelta(hours=h)
         date_str = f"{dt.day}/{dt.month:02d}/{str(dt.year)[-2:]}"
         time_str = _format_time(dt.hour)
-        is_gap   = GAP_START <= h < GAP_END
+        is_gap   = GAP_HOUR_START <= h < GAP_HOUR_END
         bar      = str(round(float(rng.uniform(1010, 1015)), 1))
         in_temp  = str(round(float(rng.uniform(21, 24)), 1))
         in_hum   = str(int(rng.integers(50, 65)))
@@ -169,7 +172,7 @@ def reconstruction():
     )
 
     result = skill.reconstruct(
-        original_path=str(DAVIS_TXT),
+        original_path=str(PIPELINE_CSV),
         processed_path=r_imp["output_path"],
         output_dir=str(OUTPUT_DIR),
         equipment_code="TEST",
@@ -207,18 +210,24 @@ class TestMemoriaRawMeteo:
     def test_output_file_exists(self, reconstruction):
         assert Path(reconstruction["output_path"]).exists()
 
-    def test_total_rows(self, reconstruction):
-        assert reconstruction["total_rows"] == N_HOURS
+    def test_total_rows_equals_original_plus_reconstructed(self, reconstruction):
+        assert (
+            reconstruction["total_rows"]
+            == reconstruction["original_rows"] + reconstruction["reconstructed_rows"]
+        )
 
-    def test_reconstructed_and_original_counts(self, reconstruction):
-        assert reconstruction["reconstructed_rows"] == N_GAP
+    def test_original_rows_count(self, reconstruction):
         assert reconstruction["original_rows"] == N_ORIGINAL
 
-    def test_counts_sum_to_total(self, reconstruction):
-        assert (
-            reconstruction["reconstructed_rows"] + reconstruction["original_rows"]
-            == reconstruction["total_rows"]
-        )
+    def test_reconstructed_rows_count(self, reconstruction):
+        expected = reconstruction["padding_before_rows"] + reconstruction["padding_after_rows"] + N_GAP
+        assert reconstruction["reconstructed_rows"] == expected
+
+    def test_padding_before_at_least_min_hours(self, reconstruction):
+        assert reconstruction["padding_before_rows"] >= MIN_HOURS_BEFORE_REAL_START
+
+    def test_padding_after_at_least_one(self, reconstruction):
+        assert reconstruction["padding_after_rows"] >= 1
 
     def test_two_header_rows(self, reconstruction):
         headers, _ = _read_output(reconstruction)
@@ -238,7 +247,7 @@ class TestMemoriaRawMeteo:
         for row in data:
             parts = row[_COL["Date"]].split("/")
             assert len(parts) == 3
-            assert len(parts[2]) == 2  # 2-digit year
+            assert len(parts[2]) == 2
 
     def test_time_format_suffix(self, reconstruction):
         _, data = _read_output(reconstruction)
@@ -246,36 +255,52 @@ class TestMemoriaRawMeteo:
             t = row[_COL["Time"]]
             assert t.endswith(" a") or t.endswith(" p"), f"Unexpected time: {t!r}"
 
+    def test_memory_starts_within_working_hours(self, reconstruction):
+        _, data = _read_output(reconstruction)
+        first_hour = _parse_davis_time(data[0][_COL["Time"]])
+        assert WORKING_HOUR_START <= first_hour < WORKING_HOUR_END
+
+    def test_save_datetime_present_and_within_working_hours(self, reconstruction):
+        assert "save_datetime" in reconstruction
+        save_ts = pd.Timestamp(reconstruction["save_datetime"])
+        assert WORKING_HOUR_START <= save_ts.hour < WORKING_HOUR_END
+
     def test_reconstructed_rows_temp_not_missing(self, reconstruction):
         _, data = _read_output(reconstruction)
-        for row in data[GAP_START:GAP_END]:
+        pad = reconstruction["padding_before_rows"]
+        for row in data[pad + GAP_HOUR_START : pad + GAP_HOUR_END]:
             assert row[_COL["Temp Out"]] != "---"
 
     def test_original_rows_temp_not_missing(self, reconstruction):
         _, data = _read_output(reconstruction)
-        for row in data[:GAP_START]:
+        pad = reconstruction["padding_before_rows"]
+        for row in data[pad : pad + GAP_HOUR_START]:
             assert row[_COL["Temp Out"]] != "---"
 
     def test_hi_temp_greater_than_out(self, reconstruction):
         _, data = _read_output(reconstruction)
-        for row in data[GAP_START:GAP_END]:
+        pad = reconstruction["padding_before_rows"]
+        for row in data[pad + GAP_HOUR_START : pad + GAP_HOUR_END]:
             assert float(row[_COL["Hi Temp"]]) > float(row[_COL["Temp Out"]])
 
     def test_low_temp_less_than_out(self, reconstruction):
         _, data = _read_output(reconstruction)
-        for row in data[GAP_START:GAP_END]:
+        pad = reconstruction["padding_before_rows"]
+        for row in data[pad + GAP_HOUR_START : pad + GAP_HOUR_END]:
             assert float(row[_COL["Low Temp"]]) < float(row[_COL["Temp Out"]])
 
     def test_wind_dir_is_valid_cardinal(self, reconstruction):
         valid = set(_CARDINAL_DEG.keys())
         _, data = _read_output(reconstruction)
-        for row in data[GAP_START:GAP_END]:
+        pad = reconstruction["padding_before_rows"]
+        for row in data[pad + GAP_HOUR_START : pad + GAP_HOUR_END]:
             assert row[_COL["Wind Dir"]] in valid
 
     def test_hi_dir_is_valid_cardinal(self, reconstruction):
         valid = set(_CARDINAL_DEG.keys())
         _, data = _read_output(reconstruction)
-        for row in data[GAP_START:GAP_END]:
+        pad = reconstruction["padding_before_rows"]
+        for row in data[pad + GAP_HOUR_START : pad + GAP_HOUR_END]:
             assert row[_COL["Hi Dir"]] in valid
 
     def test_heat_dd_always_zero(self, reconstruction):
@@ -292,6 +317,10 @@ class TestMemoriaRawMeteo:
         assert "date_range" in reconstruction
         assert "–" in reconstruction["date_range"]
 
+    def test_measurement_range_key_present(self, reconstruction):
+        assert "measurement_range" in reconstruction
+        assert "–" in reconstruction["measurement_range"]
+
     def test_equipment_code_in_filename(self, reconstruction):
         assert "TEST" in Path(reconstruction["output_path"]).name
 
@@ -300,7 +329,7 @@ class TestMemoriaRawMeteo:
         pd.DataFrame({"date": ["2025-11-01"], "time": ["00:00"], "foo": [1.0]}).to_parquet(bad)
         with pytest.raises(ValueError, match="Required columns"):
             skill.reconstruct(
-                original_path=str(DAVIS_TXT),
+                original_path=str(PIPELINE_CSV),
                 processed_path=str(bad),
                 output_dir=str(tmp_path),
             )

@@ -3,6 +3,12 @@ Memoria raw Meteo skill
 =======================
 Reconstructs a lost Davis WeatherLink .txt export from hourly meteorological
 data (extrapolate → impute pipeline output).
+
+Follows the same working-hours conventions as MemoriaRawSkill (APNA-370):
+  - Memory start is snapped to the latest working hour that is at least
+    MIN_HOURS_BEFORE_REAL_START (+ random jitter) before the first real reading.
+  - Virtual download time (save_ts) is placed inside working hours.
+  - Memory end = floor(save_ts, h) - 1h, so last row and download are coherent.
 """
 
 import logging
@@ -12,9 +18,17 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from skills.extrapolation.extrapolator import ExtrapolationSkill
+
 logger = logging.getLogger(__name__)
 
-# 16-point wind direction sectors
+# ── Working-hours constants (same as memoria_raw.py) ─────────────────────────
+WORKING_HOUR_START = 8
+WORKING_HOUR_END   = 18
+MIN_HOURS_BEFORE_REAL_START  = 7
+MAX_EXTRA_HOURS_BEFORE_START = 6
+
+# ── 16-point wind direction sectors ──────────────────────────────────────────
 _WIND_SECTORS: list[tuple[float, float, str]] = [
     (0.0,    11.25,  "N"),
     (11.25,  33.75,  "NNE"),
@@ -35,7 +49,7 @@ _WIND_SECTORS: list[tuple[float, float, str]] = [
     (348.75, 360.0,  "N"),
 ]
 
-# Standard Davis WeatherLink column order
+# ── Standard Davis WeatherLink column order ───────────────────────────────────
 _DAVIS_COLS = [
     "Date", "Time",
     "Temp Out", "Hi Temp", "Low Temp", "Out Hum", "Dew Pt.",
@@ -46,13 +60,18 @@ _DAVIS_COLS = [
     "EMC", "Air Density", "Wind Samp", "Wind Tx", "ISS Recept", "Arc. Int.",
 ]
 
-# Columns whose mean fills reconstructed rows ("las demás")
-_MEAN_COLS = [
-    "In Temp", "In Hum", "In Dew", "In Heat",
-    "EMC", "Air Density", "Wind Samp", "Wind Tx", "ISS Recept", "Arc. Int.",
-]
+# ── Davis WeatherLink header rows (hardcoded from reference file) ─────────────
+_DAVIS_HEADER_1 = (
+    "\t\tTemp\tHi\tLow\tOut\tDew\tWind\tWind\tWind\tHi\tHi\tWind\tHeat\tTHW"
+    "\t\t\tRain\tHeat\tCool\tIn \tIn\tIn \tIn \tIn \tIn Air\tWind\tWind\tISS \tArc."
+)
+_DAVIS_HEADER_2 = (
+    "Date\tTime\tOut\tTemp\tTemp\tHum\tPt.\tSpeed\tDir\tRun\tSpeed\tDir"
+    "\tChill\tIndex\tIndex\tBar  \tRain\tRate\tD-D \tD-D \tTemp\tHum\tDew"
+    "\tHeat\tEMC\tDensity\tSamp\tTx \tRecept\tInt."
+)
 
-# Cardinal direction → degrees (midpoint of each 16-point sector)
+# ── Cardinal direction → degrees (midpoint of each sector) ───────────────────
 _CARDINAL_DEG: dict[str, float] = {
     "N": 0.0,   "NNE": 22.5,  "NE": 45.0,  "ENE": 67.5,
     "E": 90.0,  "ESE": 112.5, "SE": 135.0, "SSE": 157.5,
@@ -60,7 +79,28 @@ _CARDINAL_DEG: dict[str, float] = {
     "W": 270.0, "WNW": 292.5, "NW": 315.0, "NNW": 337.5,
 }
 
-# Column aliases for imputed parquet
+# ── Hardcoded statistical parameters (derived from Vainillal May 26 reference)
+_WR_MIN,  _WR_MAX   = 0.00, 17.70
+_WC_MIN,  _WC_MAX   = 4.10, 34.10
+_HI_MIN,  _HI_MAX   = 5.50, 47.30
+_THW_MIN, _THW_MAX  = 4.10, 47.30
+_DEW_MIN, _DEW_MAX  = 2.90, 29.20
+_HI_SPD_DELTA_MAX   = 4.50
+
+_FIXED_MEANS: dict[str, float] = {
+    "In Temp":    27.1,
+    "In Hum":     61.3,
+    "In Dew":     18.4,
+    "In Heat":    29.6,
+    "EMC":        11.6,
+    "Air Density": 0.08,
+    "Wind Samp":  1383.7,
+    "Wind Tx":    1.0,
+    "ISS Recept": 99.5,
+    "Arc. Int.":  60.0,
+}
+
+# ── Column aliases for imputed parquet ────────────────────────────────────────
 _PARQUET_ALIASES: dict[str, list[str]] = {
     "temp":  ["Temp Out - Ind", "temp", "Temp Out",    "T_ext",   "temperatura"],
     "hum":   ["Hum Out - Ind",  "hum",  "Out Hum",     "HR_ext",  "humedad"],
@@ -71,9 +111,17 @@ _PARQUET_ALIASES: dict[str, list[str]] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# ── Module-level helpers ──────────────────────────────────────────────────────
+
+def _latest_working_hour_at_or_before(ts: pd.Timestamp) -> pd.Timestamp:
+    """Latest whole-hour timestamp ≤ ts that falls within [WORKING_HOUR_START, WORKING_HOUR_END)."""
+    if WORKING_HOUR_START <= ts.hour < WORKING_HOUR_END:
+        return ts.normalize() + pd.Timedelta(hours=ts.hour)
+    if ts.hour >= WORKING_HOUR_END:
+        return ts.normalize() + pd.Timedelta(hours=WORKING_HOUR_END - 1)
+    prev_day = ts.normalize() - pd.Timedelta(days=1)
+    return prev_day + pd.Timedelta(hours=WORKING_HOUR_END - 1)
+
 
 def _deg_to_cardinal(degrees: float) -> str:
     d = float(degrees) % 360.0
@@ -107,7 +155,6 @@ def _format_time(hour: int) -> str:
 
 
 def _format_date(dt: pd.Timestamp) -> str:
-    """D/MM/YY — no leading zero on day."""
     return f"{dt.day}/{dt.month:02d}/{str(dt.year)[-2:]}"
 
 
@@ -122,46 +169,18 @@ def _detect_col(df: pd.DataFrame, aliases: list[str]) -> Optional[str]:
     return None
 
 
-def _to_num(series: pd.Series) -> pd.Series:
-    return pd.to_numeric(
-        series.replace(["---", "------", "", "nan"], np.nan), errors="coerce"
-    )
-
-
-def _load_davis(path: str) -> tuple[pd.DataFrame, list[str]]:
-    """
-    Load a Davis WeatherLink .txt export.
-    All values are kept as strings; a _datetime column is added.
-    Returns (df, [header_line1, header_line2]).
-    """
-    raw = Path(path).read_text(encoding="utf-8", errors="replace")
-    lines = raw.splitlines()
-    header_lines = lines[:2]
-
-    rows = []
-    for line in lines[2:]:
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        while len(parts) < len(_DAVIS_COLS):
-            parts.append("---")
-        rows.append([p.strip() for p in parts[: len(_DAVIS_COLS)]])
-
-    df = pd.DataFrame(rows, columns=_DAVIS_COLS)
-
-    dts: list[pd.Timestamp] = []
-    for _, row in df.iterrows():
-        try:
-            d, m, y = str(row["Date"]).strip().split("/")
-            hour = _parse_davis_time(row["Time"])
-            dts.append(
-                pd.Timestamp(year=2000 + int(y), month=int(m), day=int(d), hour=hour)
-            )
-        except Exception:
-            dts.append(pd.NaT)
-    df["_datetime"] = dts
-
-    return df, header_lines
+def _load_pipeline_csv(path: str) -> pd.DataFrame:
+    """Load pre-imputation pipeline CSV; attach _datetime column."""
+    df = pd.read_csv(path, sep=";")
+    date_col = _detect_col(df, ["date", "Date", "fecha"])
+    time_col = _detect_col(df, ["time", "Time", "hora"])
+    if not date_col or not time_col:
+        raise ValueError("No date/time columns found in pipeline CSV.")
+    combined = df[date_col].astype(str) + " " + df[time_col].astype(str)
+    iso = pd.to_datetime(combined, format="%Y-%m-%d %H:%M", errors="coerce")
+    col_dt = pd.to_datetime(combined, format="%d/%m/%Y %H:%M", errors="coerce")
+    df["_datetime"] = iso.fillna(col_dt)
+    return df
 
 
 def _load_parquet(path: str) -> tuple[pd.DataFrame, dict[str, str]]:
@@ -183,16 +202,13 @@ def _load_parquet(path: str) -> tuple[pd.DataFrame, dict[str, str]]:
         c = _detect_col(df, aliases)
         if c:
             col_map[key] = c
-            # Wind direction may be stored as str dtype (str-encoded floats) — force numeric
             if key == "wd":
                 df[c] = pd.to_numeric(df[c], errors="coerce")
 
     return df, col_map
 
 
-# ---------------------------------------------------------------------------
-# Skill
-# ---------------------------------------------------------------------------
+# ── Skill ─────────────────────────────────────────────────────────────────────
 
 class MemoriaRawMeteoSkill:
 
@@ -210,7 +226,8 @@ class MemoriaRawMeteoSkill:
         Parameters
         ----------
         original_path:
-            Original Davis WeatherLink .txt file (may contain '---' gaps).
+            Pre-imputation pipeline CSV (semicolon-delimited, ISO dates).
+            Used to determine the measurement period and identify gap rows.
         processed_path:
             Imputed parquet from the extrapolate → impute pipeline.
         output_dir:
@@ -225,7 +242,7 @@ class MemoriaRawMeteoSkill:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # ── Load inputs ──────────────────────────────────────────────────────
-        orig_df, header_lines = _load_davis(original_path)
+        orig_df = _load_pipeline_csv(original_path)
         proc_df, col_map = _load_parquet(processed_path)
 
         required = ["temp", "hum", "ws", "wd", "press", "rain"]
@@ -236,148 +253,130 @@ class MemoriaRawMeteoSkill:
                 f"Available: {list(proc_df.columns)}"
             )
 
-        # ── Date range from original file ─────────────────────────────────
-        orig_valid_dts = orig_df.loc[orig_df["_datetime"].notna(), "_datetime"]
-        orig_start = orig_valid_dts.min()
-        orig_end   = orig_valid_dts.max()
+        # ── Measurement period from original CSV ──────────────────────────
+        orig_dts = orig_df["_datetime"].dropna()
+        orig_start = orig_dts.min()
+        orig_end   = orig_dts.max()
 
-        proc_df = (
-            proc_df[
-                proc_df["_datetime"].notna()
-                & (proc_df["_datetime"] >= orig_start)
-                & (proc_df["_datetime"] <= orig_end)
-            ]
-            .sort_values("_datetime")
-            .reset_index(drop=True)
-        )
-
-        # ── Statistics from valid original rows ───────────────────────────
-        orig_temp_num = _to_num(orig_df["Temp Out"])
-        valid_mask = orig_temp_num.notna() & orig_df["_datetime"].notna()
-        valid_orig = orig_df[valid_mask].copy()
-
-        if len(valid_orig) == 0:
-            raise ValueError(
-                "Original Davis file has no valid rows (all Temp Out are '---')."
+        # ── Gap rows: timestamps where temp was NaN in the original CSV ───
+        temp_col = _detect_col(orig_df, _PARQUET_ALIASES["temp"])
+        if temp_col:
+            gap_dt_set = set(
+                orig_df.loc[
+                    pd.to_numeric(orig_df[temp_col], errors="coerce").isna()
+                    & orig_df["_datetime"].notna(),
+                    "_datetime",
+                ]
             )
+        else:
+            gap_dt_set = set()
 
-        def _rng_minmax(col: str) -> tuple[float, float]:
-            s = _to_num(valid_orig[col]).dropna()
-            return (float(s.min()), float(s.max())) if len(s) > 0 else (0.0, 1.0)
-
-        def _pool(col: str) -> np.ndarray:
-            return _to_num(valid_orig[col]).dropna().values
-
-        wr_min,  wr_max  = _rng_minmax("Wind Run")
-        wc_min,  wc_max  = _rng_minmax("Wind Chill")
-        hi_min,  hi_max  = _rng_minmax("Heat Index")
-        thw_min, thw_max = _rng_minmax("THW Index")
-        dew_pool         = _pool("Dew Pt.")
-        rr_pool          = _pool("Rain Rate")
-
-        # Wind direction pool: convert cardinal strings from original to degrees
-        wd_deg_pool = np.array([
-            _CARDINAL_DEG[v]
-            for v in valid_orig["Wind Dir"]
-            if isinstance(v, str) and v in _CARDINAL_DEG
-        ], dtype=float)
-        if len(wd_deg_pool) == 0:
-            wd_deg_pool = np.array([0.0])
-
-        ws_s    = _to_num(valid_orig["Wind Speed"])
-        his_s   = _to_num(valid_orig["Hi Speed"])
-        delta_s = (his_s - ws_s).dropna()
-        hi_delta_max = float(delta_s.quantile(0.95)) if len(delta_s) >= 5 else 2.0
-        hi_delta_max = max(hi_delta_max, 0.3)
-
-        means: dict[str, float] = {}
-        for col in _MEAN_COLS:
-            s = _to_num(orig_df[col]).dropna()
-            means[col] = float(s.mean()) if len(s) > 0 else 0.0
-
-        # ── Index original for fast lookup ────────────────────────────────
-        orig_nodup = (
-            orig_df.dropna(subset=["_datetime"])
+        # ── Index ALL parquet rows for fast lookup ────────────────────────
+        proc_indexed = (
+            proc_df[proc_df["_datetime"].notna()]
             .drop_duplicates(subset=["_datetime"])
+            .set_index("_datetime")
+            .sort_index()
         )
-        orig_idx   = orig_nodup.set_index("_datetime")
-        valid_dt_set = set(valid_orig["_datetime"].dropna())
+
+        # Wind direction fallback pool (non-NaN wd values)
+        wd_col = col_map["wd"]
+        wd_pool = proc_df[wd_col].dropna().values
+        if len(wd_pool) == 0:
+            wd_pool = np.array([0.0])
+
+        # ── Working-hours memory bounds ───────────────────────────────────
+        extra_h = int(rng.integers(0, MAX_EXTRA_HOURS_BEFORE_START + 1))
+        margin_target = orig_start - pd.Timedelta(hours=MIN_HOURS_BEFORE_REAL_START + extra_h)
+        mem_start = _latest_working_hour_at_or_before(margin_target)
+
+        rand_min = int(rng.integers(0, 60))
+        rand_sec = int(rng.integers(0, 60))
+        candidate_save = proc_indexed.index.max() + pd.Timedelta(hours=1)
+        if candidate_save.hour < WORKING_HOUR_START:
+            save_ts = candidate_save.normalize() + pd.Timedelta(
+                hours=WORKING_HOUR_START, minutes=rand_min, seconds=rand_sec
+            )
+        elif candidate_save.hour >= WORKING_HOUR_END:
+            next_day = candidate_save.normalize() + pd.Timedelta(days=1)
+            save_ts = next_day + pd.Timedelta(
+                hours=WORKING_HOUR_START, minutes=rand_min, seconds=rand_sec
+            )
+        else:
+            save_ts = candidate_save + pd.Timedelta(minutes=rand_min % 30, seconds=rand_sec)
+        mem_end = save_ts.floor("h") - pd.Timedelta(hours=1)
 
         # ── Build output rows ─────────────────────────────────────────────
+        all_timestamps = pd.date_range(mem_start, mem_end, freq="h")
         out_rows: list[dict] = []
         reconstructed_count = 0
+        padding_before_count = 0
+        padding_after_count  = 0
 
-        for _, prow in proc_df.iterrows():
-            dt = prow["_datetime"]
-            if pd.isna(dt):
-                continue
+        for dt in all_timestamps:
+            is_padding = dt < orig_start or dt > orig_end
+            is_gap     = dt in gap_dt_set
+            is_in_proc = dt in proc_indexed.index
 
-            row: dict[str, str] = {
-                "Date": _format_date(dt),
-                "Time": _format_time(dt.hour),
-            }
-
-            if dt in valid_dt_set:
-                # Keep all original string values unchanged
-                orow = orig_idx.loc[dt]
-                for col in _DAVIS_COLS[2:]:
-                    v = orow[col]
-                    row[col] = (
-                        "---"
-                        if (isinstance(v, float) and pd.isna(v))
-                        else str(v)
-                    )
-            else:
-                reconstructed_count += 1
-
+            if is_in_proc:
+                prow = proc_indexed.loc[dt]
                 temp = float(prow[col_map["temp"]])
                 hum  = float(prow[col_map["hum"]])
                 ws   = float(prow[col_map["ws"]])
-                wd   = float(prow[col_map["wd"]])
+                wd_val = prow[col_map["wd"]]
+                wd = float(rng.choice(wd_pool)) if pd.isna(wd_val) else float(wd_val)
                 pr   = float(prow[col_map["press"]])
                 rain = float(prow[col_map["rain"]])
+            else:
+                # Hot-deck for timestamps outside the imputed parquet range
+                temp = float(ExtrapolationSkill._hot_deck_draw(proc_df, col_map["temp"], dt.hour, False))
+                hum  = float(ExtrapolationSkill._hot_deck_draw(proc_df, col_map["hum"],  dt.hour, False))
+                ws   = float(ExtrapolationSkill._hot_deck_draw(proc_df, col_map["ws"],   dt.hour, False))
+                wd   = float(ExtrapolationSkill._hot_deck_draw(proc_df, col_map["wd"],   dt.hour, True))
+                pr   = float(ExtrapolationSkill._hot_deck_draw(proc_df, col_map["press"],dt.hour, False))
+                rain = float(ExtrapolationSkill._hot_deck_draw(proc_df, col_map["rain"], dt.hour, False))
 
-                row["Temp Out"]   = f"{temp:.1f}"
-                row["Hi Temp"]    = f"{temp + float(rng.uniform(1.1, 1.7)):.1f}"
-                row["Low Temp"]   = f"{temp - float(rng.uniform(1.1, 1.7)):.1f}"
-                row["Out Hum"]    = f"{hum:.1f}"
-                row["Dew Pt."]    = (
-                    f"{float(rng.choice(dew_pool)):.1f}"
-                    if len(dew_pool) > 0 else "---"
-                )
-                row["Wind Speed"] = f"{ws:.1f}"
-                row["Wind Dir"]   = _deg_to_cardinal(wd)
-                row["Wind Run"]   = f"{float(rng.uniform(wr_min, wr_max)):.2f}"
-                row["Hi Speed"]   = f"{ws + float(rng.uniform(0.0, hi_delta_max)):.1f}"
-                row["Hi Dir"]     = _deg_to_cardinal(
+            if is_padding or is_gap or not is_in_proc:
+                reconstructed_count += 1
+            if dt < orig_start:
+                padding_before_count += 1
+            elif dt > orig_end:
+                padding_after_count += 1
+
+            row: dict[str, str] = {
+                "Date":       _format_date(dt),
+                "Time":       _format_time(dt.hour),
+                "Temp Out":   f"{temp:.1f}",
+                "Hi Temp":    f"{temp + float(rng.uniform(1.1, 1.7)):.1f}",
+                "Low Temp":   f"{temp - float(rng.uniform(1.1, 1.7)):.1f}",
+                "Out Hum":    f"{hum:.1f}",
+                "Dew Pt.":    f"{float(rng.uniform(_DEW_MIN, _DEW_MAX)):.1f}",
+                "Wind Speed": f"{ws:.1f}",
+                "Wind Dir":   _deg_to_cardinal(wd),
+                "Wind Run":   f"{float(rng.uniform(_WR_MIN, _WR_MAX)):.2f}",
+                "Hi Speed":   f"{ws + float(rng.uniform(0.0, _HI_SPD_DELTA_MAX)):.1f}",
+                "Hi Dir":     _deg_to_cardinal(
                     (wd + float(rng.uniform(0.0, 33.75))) % 360.0
-                )
-                row["Wind Chill"] = f"{float(rng.uniform(wc_min, wc_max)):.1f}"
-                row["Heat Index"] = f"{float(rng.uniform(hi_min, hi_max)):.1f}"
-                row["THW Index"]  = f"{float(rng.uniform(thw_min, thw_max)):.1f}"
-                row["Bar"]        = f"{pr:.1f}"
-                row["Rain"]       = f"{rain:.2f}"
-                row["Rain Rate"]  = (
-                    f"{float(rng.choice(rr_pool)):.2f}"
-                    if len(rr_pool) > 0 else "0.00"
-                )
-                row["Heat D-D"]   = "0.0"
-                row["Cool D-D"]   = "0.0"
-
-                for col in _MEAN_COLS:
-                    v = means[col]
-                    row[col] = f"{v:.1f}" if not pd.isna(v) else "---"
+                ),
+                "Wind Chill": f"{float(rng.uniform(_WC_MIN, _WC_MAX)):.1f}",
+                "Heat Index": f"{float(rng.uniform(_HI_MIN, _HI_MAX)):.1f}",
+                "THW Index":  f"{float(rng.uniform(_THW_MIN, _THW_MAX)):.1f}",
+                "Bar":        f"{pr:.1f}",
+                "Rain":       f"{rain:.2f}",
+                "Rain Rate":  f"{rain:.2f}",
+                "Heat D-D":   "0.0",
+                "Cool D-D":   "0.0",
+            }
+            for col, val in _FIXED_MEANS.items():
+                row[col] = f"{val:.1f}"
 
             out_rows.append(row)
 
         # ── Write output ──────────────────────────────────────────────────
-        ts_tag   = f"{orig_start.strftime('%Y%m%d')}_{orig_end.strftime('%Y%m%d')}"
+        ts_tag   = f"{mem_start.strftime('%Y%m%d')}_{mem_end.strftime('%Y%m%d')}"
         out_path = out_dir / f"{equipment_code}_{ts_tag}.txt"
 
-        lines_out = [
-            header_lines[0] if len(header_lines) > 0 else "",
-            header_lines[1] if len(header_lines) > 1 else "",
-        ]
+        lines_out = [_DAVIS_HEADER_1, _DAVIS_HEADER_2]
         for row in out_rows:
             lines_out.append(
                 "\t".join(str(row.get(c, "---")) for c in _DAVIS_COLS)
@@ -386,10 +385,13 @@ class MemoriaRawMeteoSkill:
         out_path.write_text("\r\n".join(lines_out) + "\r\n", encoding="utf-8")
 
         logger.info(
-            "Wrote %d rows (%d original, %d reconstructed) → %s",
+            "Wrote %d rows (%d original, %d reconstructed [%d pad-before, %d pad-after, %d gap]) → %s",
             len(out_rows),
             len(out_rows) - reconstructed_count,
             reconstructed_count,
+            padding_before_count,
+            padding_after_count,
+            reconstructed_count - padding_before_count - padding_after_count,
             out_path,
         )
 
@@ -399,5 +401,9 @@ class MemoriaRawMeteoSkill:
             "total_rows": len(out_rows),
             "reconstructed_rows": reconstructed_count,
             "original_rows": len(out_rows) - reconstructed_count,
-            "date_range": f"{_format_date(orig_start)} – {_format_date(orig_end)}",
+            "padding_before_rows": padding_before_count,
+            "padding_after_rows": padding_after_count,
+            "save_datetime": str(save_ts),
+            "date_range": f"{_format_date(mem_start)} – {_format_date(mem_end)}",
+            "measurement_range": f"{_format_date(orig_start)} – {_format_date(orig_end)}",
         }
